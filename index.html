@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Tempo-Messer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131a26; --panel-2: #1a2334; --line: #2a3550;
+    --text: #e8ecf4; --muted: #8b97ad;
+    --ok: #4cd97b; --warn: #ffb020; --over: #ff3b30; --accent: #5aa8ff;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { min-height: 100dvh; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif; font-size: 16px;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  .app { max-width: 560px; margin: 0 auto; padding: 10px 12px calc(40px + var(--safe-b)); }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 8px 2px 12px; }
+  header h1 { font-family: 'Share Tech Mono', monospace; font-size: 20px; letter-spacing: 2px; font-weight: 400; }
+  header .zone { font-family: 'Share Tech Mono', monospace; font-size: 14px; color: var(--muted); }
+  header .zone b { color: var(--warn); font-weight: 400; }
+
+  .stage {
+    position: relative; border-radius: 12px; overflow: hidden; background: #000;
+    border: 1px solid var(--line); aspect-ratio: 4 / 3; touch-action: none;
+  }
+  .stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .stage canvas.overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage .start-hint {
+    position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center; background: var(--panel);
+    text-align: center; padding: 24px; z-index: 2;
+  }
+  .stage .start-hint p { color: var(--muted); font-size: 14px; max-width: 340px; line-height: 1.5; }
+
+  .format-warn {
+    display: none; background: #2a1520; border: 1px solid var(--over);
+    border-radius: 12px; padding: 12px 14px; margin-top: 12px;
+    font-size: 14px; line-height: 1.55; color: #ffb8b3;
+  }
+  .format-warn b { color: #fff; }
+
+  .readout { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 4px; }
+  .speed {
+    font-family: 'Share Tech Mono', monospace; font-size: 76px; line-height: 1;
+    color: var(--muted); min-width: 200px; text-align: center; transition: color .15s;
+  }
+  .speed.ok { color: var(--ok); }
+  .speed.over { color: var(--over); text-shadow: 0 0 28px rgba(255,59,48,.45); }
+  .speed-unit { font-family: 'Share Tech Mono', monospace; color: var(--muted); font-size: 16px; }
+  .verdict { text-align: center; font-family: 'Share Tech Mono', monospace; font-size: 13px; letter-spacing: 1px; min-height: 20px; color: var(--muted); }
+  .verdict.over { color: var(--over); } .verdict.ok { color: var(--ok); }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 12px; }
+  .panel h2 {
+    font-family: 'Share Tech Mono', monospace; font-size: 12px; font-weight: 400;
+    letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel h2 .step {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 1px solid var(--accent); color: var(--accent); font-size: 11px;
+  }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 12px; }
+  label { font-size: 14px; color: var(--muted); }
+
+  input[type="number"], input[type="text"] {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 12px; font-size: 16px; min-height: 46px;
+  }
+  input[type="number"] { font-family: 'Share Tech Mono', monospace; width: 100px; }
+  input[type="text"] { flex: 1; font-family: 'Inter', sans-serif; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); min-height: 32px; }
+
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 16px; font-family: 'Inter', sans-serif;
+    font-size: 15px; font-weight: 500; cursor: pointer; min-height: 46px;
+  }
+  button:active { transform: scale(.98); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101f; }
+  button.danger { background: transparent; border-color: var(--over); color: var(--over); }
+  button:disabled { opacity: .4; }
+
+  .seg { display: flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; background: transparent; padding: 12px 16px; color: var(--muted); min-height: 46px; }
+  .seg button.active { background: var(--accent); color: #06101f; }
+
+  .meters { margin-top: 12px; display: grid; gap: 8px; }
+  .meter { display: flex; align-items: center; gap: 8px; }
+  .meter span { font-family: 'Share Tech Mono', monospace; font-size: 13px; width: 14px; }
+  .meter .bar { flex: 1; position: relative; height: 12px; background: var(--panel-2); border-radius: 6px; overflow: hidden; }
+  .meter .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: var(--accent); border-radius: 6px; transition: width .06s linear; }
+  .meter.b .bar i { background: var(--warn); }
+  .meter .bar em { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: var(--over); }
+  .meter-hint { font-size: 13px; color: var(--muted); line-height: 1.45; }
+
+  .tapbtns { display: flex; gap: 10px; margin-top: 12px; }
+  .tapbtns button { flex: 1; padding: 26px 0; font-family: 'Share Tech Mono', monospace; font-size: 22px; letter-spacing: 2px; }
+  .tapbtns button.armed { border-color: var(--warn); color: var(--warn); }
+
+  .status { font-family: 'Share Tech Mono', monospace; font-size: 12px; color: var(--muted); margin-top: 12px; min-height: 16px; }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.kmh { font-family: 'Share Tech Mono', monospace; font-size: 16px; }
+  td.kmh.over { color: var(--over); } td.kmh.ok { color: var(--ok); }
+  .stats { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+  .stats div { font-family: 'Share Tech Mono', monospace; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 400; }
+
+  details { margin-top: 12px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+  details summary { cursor: pointer; color: var(--text); font-size: 14px; padding: 6px 0; }
+  details p { margin: 8px 0; }
+  .footer-note { margin-top: 16px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>TEMPO-MESSER</h1>
+    <div class="zone">Limit: <b id="limitLabel">50</b> km/h</div>
+  </header>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas class="overlay" id="overlay"></canvas>
+    <div class="start-hint" id="startHint">
+      <button class="primary" id="btnCam">Live messen (Kamera)</button>
+      <button id="btnFile">Video auswerten</button>
+      <p>Handy stabil auflegen (Fensterbank, Stativ, Mauer). Dann Linien A/B auf feste Straßenpunkte ziehen und das Messband auf die Fahrbahn eingrenzen.</p>
+      <input type="file" id="fileInput" accept="video/*" style="display:none">
+    </div>
+  </div>
+
+  <div class="format-warn" id="formatWarn">
+    <b>Video kann nicht dekodiert werden (HEVC/H.265).</b><br>
+    Falls das Video nur pausiert ist: unten <b>Play / Pause</b> antippen.
+    Sonst: iPhone <b>Einstellungen → Kamera → Formate → „Maximale Kompatibilität"</b> wählen und <b>neu filmen</b> — die Einstellung wirkt nicht auf vorhandene Videos, die müssen nach H.264/MP4 konvertiert werden.
+  </div>
+
+  <div class="panel" id="playPanel" style="display:none">
+    <div class="row">
+      <button id="btnPlay">Play / Pause</button>
+      <div class="seg" id="rateSeg">
+        <button data-rate="0.25">0.25×</button>
+        <button data-rate="0.5">0.5×</button>
+        <button data-rate="1" class="active">1×</button>
+      </div>
+      <button id="btnRestart">Anfang</button>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div class="speed" id="speed">--</div>
+    <div class="speed-unit">km/h</div>
+  </div>
+  <div class="verdict" id="verdict"></div>
+
+  <div class="panel">
+    <h2><span class="step">1</span> Messstrecke</h2>
+    <div class="row">
+      <label for="dist">Reale Distanz zwischen A und B auf der Straße (mit Google Maps ausmessen):</label>
+    </div>
+    <div class="row">
+      <input type="number" id="dist" value="20" min="3" max="200" step="0.5" inputmode="decimal"> <label>Meter</label>
+      <div class="seg" id="limitSeg" style="margin-left:auto">
+        <button data-limit="50" class="active">50</button>
+        <button data-limit="30">30</button>
+        <button data-limit="auto">Auto</button>
+      </div>
+    </div>
+    <div class="row">
+      <input type="text" id="street" placeholder="Straße (optional, für die Share-Card)" autocomplete="street-address">
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="step">2</span> Messmodus</h2>
+    <div class="row">
+      <div class="seg" id="modeSeg">
+        <button data-mode="auto" class="active">Automatisch</button>
+        <button data-mode="manual">Manuell</button>
+      </div>
+      <div class="row" id="sensRow" style="flex:1; min-width:180px">
+        <label>Empfindlichkeit</label>
+        <input type="range" id="sens" min="1" max="10" value="8">
+      </div>
+    </div>
+    <div class="meters" id="meters">
+      <div class="meter a"><span>A</span><div class="bar"><i id="meterA"></i><em></em></div></div>
+      <div class="meter b"><span>B</span><div class="bar"><i id="meterB"></i><em></em></div></div>
+      <div class="meter-hint">Durchfahrten müssen deutlich über die rote Marke, Wind in Bäumen darunter bleiben. Sonst Messband enger ziehen oder Empfindlichkeit anpassen.</div>
+    </div>
+    <div class="tapbtns" id="tapbtns" style="display:none">
+      <button id="tapA">LINIE A</button>
+      <button id="tapB" disabled>LINIE B</button>
+    </div>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Keine Quelle</span></div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="step">3</span> Ergebnis</h2>
+    <table>
+      <thead><tr><th>Zeit</th><th>km/h</th><th>Dauer</th><th>Richtung</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+    <div class="stats">
+      <div>Messungen <b id="stCount">0</b></div>
+      <div>Ø <b id="stAvg">–</b></div>
+      <div>v85 <b id="stV85">–</b></div>
+      <div>Max <b id="stMax">–</b></div>
+      <div>Über Limit <b id="stOver">0 %</b></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="btnShare" style="flex:1">Share-Card teilen</button>
+    </div>
+    <div class="row">
+      <button id="btnCsv" style="flex:1">CSV exportieren</button>
+      <button class="danger" id="btnClear">Löschen</button>
+    </div>
+  </div>
+
+  <details>
+    <summary>Anleitung · Distanz · Genauigkeit · Rechtliches</summary>
+    <p><b>Setup:</b> Linien A und B auf feste, wiedererkennbare Punkte der Straße ziehen — so weit auseinander wie möglich (ideal 20–50 m). Das Messband (waagerechte Linien) eng um die Fahrbahn legen, damit Bäume und Himmel nicht mitgemessen werden.</p>
+    <p><b>Distanz:</b> Mit dem Google-Maps-Messwerkzeug den Abschnitt zwischen den beiden Punkten ausmessen. Anhaltspunkte: Leitlinie innerorts ≈ 3 m Strich + 6 m Lücke, geparkter Pkw ≈ 4,5 m.</p>
+    <p><b>v85</b> ist die Geschwindigkeit, die 85 % der Fahrzeuge nicht überschreiten — die Kennzahl, mit der Verkehrsbehörden über Blitzer und Verkehrsberuhigung entscheiden.</p>
+    <p><b>Video-Modus:</b> Gemessen wird auf der Zeitachse des Videos — Zeitlupe (0.25×/0.5×) macht die Auswertung nur präziser. Im manuellen Modus kannst du pausieren und frame-genau spulen.</p>
+    <p><b>Rechtliches:</b> Private Messungen sind kein geeichtes Beweismittel. Als systematische Dokumentation für Bezirksamt, Polizei oder Verkehrsbehörde sind die Protokolle aber genau das richtige Material.</p>
+  </details>
+
+  <p class="footer-note">Mehrere Fahrzeuge gleichzeitig? <a href="./tracking.html" style="color:#5aa8ff">Multi-Tracking-Beta öffnen</a>.</p>
+  <p class="footer-note">Es werden keine Aufnahmen gespeichert und keine Kennzeichen erfasst — die App misst nur Bewegung zwischen zwei Linien, alles läuft lokal auf deinem Handy.</p>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('video'), overlay = $('overlay'), stage = $('stage');
+  const octx = overlay.getContext('2d');
+  const proc = document.createElement('canvas');
+  const pctx = proc.getContext('2d', { willReadFrequently: true });
+  const PROC_W = 240;
+
+  const state = {
+    running: false,
+    source: null,             // 'live' | 'file'
+    mode: 'auto',
+    limitMode: '50',
+    lineA: 0.30, lineB: 0.70,
+    bandTop: 0.40, bandBot: 0.65,
+    dragging: null,
+    prevFrame: null,
+    burst: { A: null, B: null },
+    pending: { A: [], B: [] },
+    lastEvent: { A: -9, B: -9 },
+    measurements: [],
+    manualStart: null,
+  };
+
+  // ---------- Zeitbasis ----------
+  const nowS = () => state.source === 'file' ? video.currentTime : performance.now() / 1000;
+
+  // ---------- Limit ----------
+  const currentLimit = () => {
+    if (state.limitMode === '50') return 50;
+    if (state.limitMode === '30') return 30;
+    const h = new Date().getHours();
+    return (h >= 22 || h < 6) ? 30 : 50;
+  };
+  const refreshLimitLabel = () => { $('limitLabel').textContent = currentLimit(); };
+  setInterval(refreshLimitLabel, 30000);
+
+  $('limitSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.limitMode = b.dataset.limit;
+    document.querySelectorAll('#limitSeg button').forEach(x => x.classList.toggle('active', x === b));
+    refreshLimitLabel();
+  });
+
+  // ---------- Modus ----------
+  $('modeSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.mode = b.dataset.mode;
+    document.querySelectorAll('#modeSeg button').forEach(x => x.classList.toggle('active', x === b));
+    $('tapbtns').style.display = state.mode === 'manual' ? 'flex' : 'none';
+    $('sensRow').style.display = state.mode === 'auto' ? 'flex' : 'none';
+    $('meters').style.display = state.mode === 'auto' ? 'grid' : 'none';
+    resetDetection();
+    setStatus(state.mode === 'auto' ? 'Auto-Erkennung aktiv' : 'Manuell: bei Durchfahrt A und B tippen');
+  });
+
+  const threshold = () => 12 - Number($('sens').value);
+
+  // ---------- Display wachhalten (Live-Messung) ----------
+  let wakeLock = null;
+  async function keepAwake() {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.source === 'live') keepAwake();
+  });
+
+  // ---------- Videodatei ----------
+  $('btnFile').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', () => {
+    const f = $('fileInput').files[0]; if (!f) return;
+    stopStream();
+    state.source = 'file';
+    video.srcObject = null;
+    video.src = URL.createObjectURL(f);
+    video.style.objectFit = 'contain';
+    video.playbackRate = 1;
+    $('startHint').style.display = 'none';
+    $('playPanel').style.display = 'block';
+    $('formatWarn').style.display = 'none';
+    state.running = true;
+    resetDetection();
+    video.play().catch(() => {});
+    setStatus('Video geladen – Erkennung läuft während der Wiedergabe');
+    requestAnimationFrame(loop);
+    scheduleDecodeCheck();
+    setTimeout(() => {
+      if (state.source === 'file' && video.paused && video.currentTime === 0)
+        setStatus('Wiedergabe wartet – tippe unten auf Play / Pause');
+    }, 2000);
+  });
+
+  video.addEventListener('error', () => { if (state.source === 'file') showFormatWarn(); });
+
+  // Formatprüfung: geduldig und event-basiert. Große Dateien brauchen Zeit,
+  // iOS blockiert manchmal den Autostart – beides ist KEIN Formatfehler.
+  // Gewarnt wird erst bei echtem Decoder-Fehler oder wenn nach ~12 s
+  // Wiedergabe trotzdem nur schwarze Frames kommen.
+  let decodeChecks = 0;
+  function scheduleDecodeCheck() { decodeChecks = 0; runDecodeCheck(); }
+  function runDecodeCheck() {
+    if (state.source !== 'file') return;
+    if (video.error) { showFormatWarn(); return; }
+    decodeChecks++;
+    const notReady = !video.videoWidth || video.readyState < 2 || video.currentTime === 0;
+    if (notReady) {
+      if (decodeChecks < 17) { setTimeout(runDecodeCheck, 700); return; }
+      if (!video.videoWidth) { showFormatWarn(); return; }
+    }
+    proc.width = 32; proc.height = 32;
+    try {
+      pctx.drawImage(video, 0, 0, 32, 32);
+      const d = pctx.getImageData(0, 0, 32, 32).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i+1] + d[i+2];
+      if (sum < 500) {
+        if (decodeChecks < 17) { setTimeout(runDecodeCheck, 700); return; }
+        showFormatWarn();
+      } else {
+        $('formatWarn').style.display = 'none';
+      }
+    } catch (e) { showFormatWarn(); }
+  }
+  function showFormatWarn() {
+    $('formatWarn').style.display = 'block';
+    setStatus('Videoformat wird nicht unterstützt');
+  }
+
+  $('btnPlay').addEventListener('click', () => { video.paused ? video.play() : video.pause(); });
+  $('rateSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    video.playbackRate = parseFloat(b.dataset.rate);
+    document.querySelectorAll('#rateSeg button').forEach(x => x.classList.toggle('active', x === b));
+  });
+  $('btnRestart').addEventListener('click', () => {
+    video.currentTime = 0;
+    resetDetection();
+    video.play().catch(() => {});
+  });
+
+  const stopStream = () => {
+    const s = video.srcObject;
+    if (s && s.getTracks) s.getTracks().forEach(t => t.stop());
+  };
+
+  // ---------- Live-Kamera (braucht HTTPS) ----------
+  $('btnCam').addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false
+      });
+      state.source = 'live';
+      video.src = '';
+      video.srcObject = stream;
+      video.style.objectFit = 'cover';
+      $('playPanel').style.display = 'none';
+      await video.play();
+      $('startHint').style.display = 'none';
+      state.running = true;
+      resetDetection();
+      keepAwake();
+      setStatus('Auto-Erkennung aktiv');
+      requestAnimationFrame(loop);
+    } catch (err) {
+      setStatus('Kamera nicht verfügbar (' + err.name + ') – Live braucht HTTPS, nutze "Video auswerten"');
+    }
+  });
+
+  // ---------- Linien & Messband ziehen ----------
+  function pointerPos(e) {
+    const r = stage.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+    return {
+      x: Math.min(0.97, Math.max(0.03, (cx - r.left) / r.width)),
+      y: Math.min(0.95, Math.max(0.05, (cy - r.top) / r.height)),
+      px: cx - r.left, py: cy - r.top, w: r.width, h: r.height
+    };
+  }
+  function nearestTarget(p) {
+    const cand = [
+      ['lineA', Math.abs(p.px - state.lineA * p.w)],
+      ['lineB', Math.abs(p.px - state.lineB * p.w)],
+      ['bandTop', Math.abs(p.py - state.bandTop * p.h)],
+      ['bandBot', Math.abs(p.py - state.bandBot * p.h)],
+    ].sort((a, b) => a[1] - b[1]);
+    return cand[0][0];
+  }
+  function onDown(e) { if (!state.running) return; state.dragging = nearestTarget(pointerPos(e)); e.preventDefault(); }
+  function onMove(e) {
+    if (!state.dragging) return;
+    const p = pointerPos(e);
+    if (state.dragging === 'lineA') state.lineA = p.x;
+    else if (state.dragging === 'lineB') state.lineB = p.x;
+    else if (state.dragging === 'bandTop') state.bandTop = Math.min(p.y, state.bandBot - 0.05);
+    else state.bandBot = Math.max(p.y, state.bandTop + 0.05);
+    e.preventDefault();
+  }
+  function onUp() { if (state.dragging) { state.dragging = null; state.prevFrame = null; } }
+  stage.addEventListener('mousedown', onDown);
+  stage.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  stage.addEventListener('touchstart', onDown, { passive: false });
+  stage.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('touchend', onUp);
+
+  // ---------- Hauptschleife ----------
+  function loop() {
+    if (!state.running) return;
+    drawOverlay();
+    if (state.mode === 'auto') detect();
+    requestAnimationFrame(loop);
+  }
+
+  function drawOverlay() {
+    const w = overlay.width = stage.clientWidth;
+    const h = overlay.height = stage.clientHeight;
+    octx.clearRect(0, 0, w, h);
+    const yT = state.bandTop * h, yB = state.bandBot * h;
+
+    octx.fillStyle = 'rgba(0,0,0,.35)';
+    octx.fillRect(0, 0, w, yT);
+    octx.fillRect(0, yB, w, h - yB);
+    octx.strokeStyle = 'rgba(232,236,244,.7)'; octx.lineWidth = 1.5;
+    octx.setLineDash([4, 5]);
+    octx.beginPath(); octx.moveTo(0, yT); octx.lineTo(w, yT); octx.stroke();
+    octx.beginPath(); octx.moveTo(0, yB); octx.lineTo(w, yB); octx.stroke();
+    octx.setLineDash([]);
+    for (const y of [yT, yB]) {
+      octx.beginPath(); octx.arc(w - 26, y, 13, 0, Math.PI * 2);
+      octx.fillStyle = 'rgba(232,236,244,.18)'; octx.fill();
+      octx.strokeStyle = 'rgba(232,236,244,.8)'; octx.stroke();
+    }
+
+    drawLine(state.lineA * w, yT, yB, 'A', '#5aa8ff');
+    drawLine(state.lineB * w, yT, yB, 'B', '#ffb020');
+  }
+  function drawLine(x, y1, y2, label, color) {
+    octx.strokeStyle = color; octx.lineWidth = 2;
+    octx.setLineDash([8, 6]);
+    octx.beginPath(); octx.moveTo(x, y1); octx.lineTo(x, y2); octx.stroke();
+    octx.setLineDash([]);
+    octx.fillStyle = color;
+    octx.font = 'bold 15px "Share Tech Mono", monospace';
+    octx.fillText(label, x - 5, y1 - 10);
+    octx.beginPath(); octx.arc(x, (y1 + y2) / 2, 14, 0, Math.PI * 2);
+    octx.fillStyle = color + '33'; octx.fill();
+    octx.strokeStyle = color; octx.stroke();
+  }
+
+  // ---------- Koordinaten-Mapping Stage → Videobild ----------
+  function mapFrac(xf, yTf, yBf) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return { x: xf, y0: yTf, y1: yBf };
+    const sw = stage.clientWidth, sh = stage.clientHeight;
+    const vAR = vw / vh, sAR = sw / sh;
+    const fit = state.source === 'file' ? 'contain' : 'cover';
+    let dispW, dispH;
+    if ((fit === 'contain') === (vAR > sAR)) { dispW = sw; dispH = sw / vAR; }
+    else { dispH = sh; dispW = sh * vAR; }
+    const offX = (sw - dispW) / 2, offY = (sh - dispH) / 2;
+    const cl = v => Math.min(1, Math.max(0, v));
+    return {
+      x: cl((xf * sw - offX) / dispW),
+      y0: cl((yTf * sh - offY) / dispH),
+      y1: cl((yBf * sh - offY) / dispH),
+    };
+  }
+
+  // ---------- Bewegungserkennung (Schwerpunkt-Timing, validiert) ----------
+  function detect() {
+    if (!video.videoWidth) return;
+    const scale = PROC_W / video.videoWidth;
+    proc.width = PROC_W;
+    proc.height = Math.round(video.videoHeight * scale);
+    let frame;
+    try {
+      pctx.drawImage(video, 0, 0, proc.width, proc.height);
+      frame = pctx.getImageData(0, 0, proc.width, proc.height);
+    } catch (e) { return; }
+
+    if (state.prevFrame && frame.data.length === state.prevFrame.data.length) {
+      const t = nowS();
+      const thr = threshold();
+      const dA = stripDiff(frame, state.prevFrame, mapFrac(state.lineA, state.bandTop, state.bandBot));
+      const dB = stripDiff(frame, state.prevFrame, mapFrac(state.lineB, state.bandTop, state.bandBot));
+      $('meterA').style.width = Math.min(100, dA / thr * 50) + '%';
+      $('meterB').style.width = Math.min(100, dB / thr * 50) + '%';
+      accumulate('A', dA, t, thr);
+      accumulate('B', dB, t, thr);
+      purgePending(t);
+    }
+    state.prevFrame = frame;
+  }
+
+  function stripDiff(cur, prev, m) {
+    const w = cur.width, h = cur.height;
+    const x0 = Math.max(0, Math.round(m.x * w) - 3);
+    const x1 = Math.min(w - 1, x0 + 6);
+    const y0 = Math.round(m.y0 * h), y1 = Math.max(y0 + 2, Math.round(m.y1 * h));
+    let sum = 0, n = 0;
+    for (let y = y0; y < y1; y += 2) {
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * w + x) * 4;
+        const la = cur.data[i] * .299 + cur.data[i+1] * .587 + cur.data[i+2] * .114;
+        const lb = prev.data[i] * .299 + prev.data[i+1] * .587 + prev.data[i+2] * .114;
+        sum += Math.abs(la - lb); n++;
+      }
+    }
+    return n ? sum / n : 0;
+  }
+
+  function accumulate(line, d, t, thr) {
+    const b = state.burst[line];
+    if (d > thr) {
+      if (!b) state.burst[line] = { sumW: d, sumWT: d * t, lastAbove: t };
+      else { b.sumW += d; b.sumWT += d * t; b.lastAbove = t; }
+    } else if (b && t - b.lastAbove > 0.35) {
+      const tc = b.sumWT / b.sumW;
+      state.burst[line] = null;
+      completeEvent(line, tc);
+    }
+  }
+
+  const maxDt = () => Math.min(8, (parseFloat($('dist').value) || 20) * 0.36);
+
+  function completeEvent(line, t) {
+    if (t - state.lastEvent[line] < 0.7) return;
+    state.lastEvent[line] = t;
+    const other = line === 'A' ? 'B' : 'A';
+    const arr = state.pending[other];
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const dt = t - arr[i];
+      if (dt > 0.10 && dt < maxDt()) {
+        arr.splice(i, 1);
+        record(dt, other === 'A' ? 'A→B' : 'B→A');
+        return;
+      }
+    }
+    state.pending[line].push(t);
+    setStatus('Linie ' + line + ' ausgelöst – warte auf ' + other);
+  }
+
+  function purgePending(t) {
+    for (const k of ['A', 'B'])
+      state.pending[k] = state.pending[k].filter(t0 => t - t0 < maxDt() && t0 <= t);
+  }
+
+  function resetDetection() {
+    state.prevFrame = null;
+    state.burst = { A: null, B: null };
+    state.pending = { A: [], B: [] };
+    state.lastEvent = { A: -9, B: -9 };
+    state.manualStart = null;
+    $('tapA').classList.remove('armed'); $('tapA').disabled = false; $('tapB').disabled = true;
+  }
+
+  // ---------- Manueller Modus ----------
+  $('tapA').addEventListener('click', () => {
+    state.manualStart = nowS();
+    $('tapA').classList.add('armed'); $('tapA').disabled = true; $('tapB').disabled = false;
+    setStatus('Läuft… bei Linie B tippen (Pausieren/Spulen erlaubt – gemessen wird Video-Zeit)');
+  });
+  $('tapB').addEventListener('click', () => {
+    if (state.manualStart === null) return;
+    const dt = nowS() - state.manualStart;
+    state.manualStart = null;
+    $('tapA').classList.remove('armed'); $('tapA').disabled = false; $('tapB').disabled = true;
+    if (dt > 0.05) record(dt, 'A→B');
+  });
+
+  // ---------- Messung erfassen ----------
+  function record(dt, dir) {
+    const dist = parseFloat($('dist').value);
+    if (!dist || dist <= 0) { setStatus('Bitte gültige Distanz eingeben'); return; }
+    const kmh = (dist / dt) * 3.6;
+    if (kmh > 200 || kmh < 2) { setStatus('Messung verworfen (unplausibel: ' + kmh.toFixed(0) + ' km/h)'); return; }
+    const limit = currentLimit();
+    const over = kmh > limit;
+    state.measurements.unshift({ ts: new Date(), kmh, dt, dir, limit });
+
+    $('speed').textContent = kmh.toFixed(0);
+    $('speed').className = 'speed ' + (over ? 'over' : 'ok');
+    $('verdict').textContent = over
+      ? (kmh - limit).toFixed(0) + ' KM/H ÜBER LIMIT (' + limit + ')'
+      : 'IM LIMIT (' + limit + ')';
+    $('verdict').className = 'verdict ' + (over ? 'over' : 'ok');
+    if (over && navigator.vibrate) navigator.vibrate(120);
+    setStatus('Gemessen: ' + kmh.toFixed(1) + ' km/h über ' + dist + ' m in ' + dt.toFixed(2) + ' s');
+    renderLog();
+  }
+
+  function v85(speeds) {
+    const s = [...speeds].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.ceil(0.85 * s.length) - 1)];
+  }
+
+  function renderLog() {
+    $('logBody').innerHTML = state.measurements.slice(0, 50).map(m =>
+      '<tr><td>' + m.ts.toLocaleTimeString('de-DE') + '</td>' +
+      '<td class="kmh ' + (m.kmh > m.limit ? 'over' : 'ok') + '">' + m.kmh.toFixed(1) + '</td>' +
+      '<td>' + m.dt.toFixed(2) + ' s</td><td>' + m.dir + '</td></tr>'
+    ).join('');
+    const n = state.measurements.length;
+    $('stCount').textContent = n;
+    if (n) {
+      const s = state.measurements.map(m => m.kmh);
+      $('stAvg').textContent = (s.reduce((a,b)=>a+b,0)/n).toFixed(1);
+      $('stV85').textContent = v85(s).toFixed(1);
+      $('stMax').textContent = Math.max(...s).toFixed(1);
+      const over = state.measurements.filter(m => m.kmh > m.limit).length;
+      $('stOver').textContent = Math.round(100*over/n) + ' %';
+    } else {
+      $('stAvg').textContent = '–'; $('stV85').textContent = '–';
+      $('stMax').textContent = '–'; $('stOver').textContent = '0 %';
+    }
+  }
+
+  // ---------- Share-Card (1080×1350, 4:5) ----------
+  async function buildShareCard() {
+    const n = state.measurements.length;
+    const speeds = state.measurements.map(m => m.kmh);
+    const overN = state.measurements.filter(m => m.kmh > m.limit).length;
+    const overPct = Math.round(100 * overN / n);
+    const street = $('street').value.trim();
+    const limit = currentLimit();
+
+    try { await document.fonts.load('700 120px "Share Tech Mono"'); } catch (e) {}
+
+    const cv = document.createElement('canvas');
+    cv.width = 1080; cv.height = 1350;
+    const c = cv.getContext('2d');
+    const mono = '"Share Tech Mono", monospace';
+    const sans = '"Inter", system-ui, sans-serif';
+
+    c.fillStyle = '#0b0e14'; c.fillRect(0, 0, 1080, 1350);
+    c.strokeStyle = '#2a3550'; c.lineWidth = 2;
+    c.strokeRect(40, 40, 1000, 1270);
+
+    c.fillStyle = '#8b97ad'; c.font = '400 34px ' + mono;
+    c.fillText('TEMPO-PROTOKOLL', 80, 130);
+    c.fillStyle = '#e8ecf4'; c.font = '500 44px ' + sans;
+    c.fillText(street || 'Meine Straße', 80, 200);
+    c.fillStyle = '#8b97ad'; c.font = '400 30px ' + mono;
+    const d = new Date();
+    c.fillText(d.toLocaleDateString('de-DE') + ' · Limit ' + limit + ' km/h', 80, 250);
+
+    // Kernzahl: Anteil über Limit
+    c.fillStyle = overPct > 0 ? '#ff3b30' : '#4cd97b';
+    c.font = '400 260px ' + mono;
+    c.fillText(overPct + '%', 80, 560);
+    c.fillStyle = '#e8ecf4'; c.font = '500 40px ' + sans;
+    c.fillText('der gemessenen Fahrzeuge über dem Limit', 80, 630);
+
+    // Kennzahlen-Zeilen
+    const rows = [
+      ['Messungen', String(n)],
+      ['Durchschnitt', (speeds.reduce((a,b)=>a+b,0)/n).toFixed(1) + ' km/h'],
+      ['v85', v85(speeds).toFixed(1) + ' km/h'],
+      ['Spitze', Math.max(...speeds).toFixed(1) + ' km/h'],
+    ];
+    let y = 760;
+    for (const [k, v] of rows) {
+      c.strokeStyle = '#2a3550'; c.beginPath(); c.moveTo(80, y - 46); c.lineTo(1000, y - 46); c.stroke();
+      c.fillStyle = '#8b97ad'; c.font = '400 34px ' + mono; c.fillText(k, 80, y);
+      c.fillStyle = '#e8ecf4'; c.font = '400 48px ' + mono;
+      c.textAlign = 'right'; c.fillText(v, 1000, y); c.textAlign = 'left';
+      y += 110;
+    }
+
+    c.fillStyle = '#8b97ad'; c.font = '400 26px ' + mono;
+    c.fillText('Gemessen mit Tempo-Messer · lokal, ohne Aufnahmen', 80, 1250);
+    return cv;
+  }
+
+  $('btnShare').addEventListener('click', async () => {
+    if (!state.measurements.length) { setStatus('Keine Messungen vorhanden'); return; }
+    const cv = await buildShareCard();
+    const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
+    const file = new File([blob], 'tempo-protokoll.png', { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Tempo-Protokoll' }); return; } catch (e) {}
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tempo-protokoll.png';
+    a.click();
+  });
+
+  // ---------- Export / Löschen ----------
+  $('btnCsv').addEventListener('click', () => {
+    if (!state.measurements.length) { setStatus('Keine Messungen vorhanden'); return; }
+    const rows = [['Datum','Uhrzeit','km/h','Dauer_s','Richtung','Limit','Ueber_Limit']];
+    [...state.measurements].reverse().forEach(m => rows.push([
+      m.ts.toLocaleDateString('de-DE'), m.ts.toLocaleTimeString('de-DE'),
+      m.kmh.toFixed(1), m.dt.toFixed(2), m.dir, m.limit, m.kmh > m.limit ? 'ja' : 'nein'
+    ]));
+    const csv = rows.map(r => r.join(';')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'tempo-protokoll_' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+  });
+
+  $('btnClear').addEventListener('click', () => {
+    state.measurements = [];
+    renderLog();
+    $('speed').textContent = '--'; $('speed').className = 'speed';
+    $('verdict').textContent = ''; $('verdict').className = 'verdict';
+  });
+
+  const setStatus = t => { $('statusText').textContent = t; };
+  refreshLimitLabel();
+})();
+</script>
+</body>
+</html>
