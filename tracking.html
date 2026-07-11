@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b0e14">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Tempo-Messer · Multi-Tracking (Beta)</title>
+<title>Tempo-Messer · Multi (Beta)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -111,7 +111,7 @@
     <div class="start-hint" id="startHint">
       <button class="primary" id="btnCam">Live messen (Kamera)</button>
       <button id="btnFile">Video auswerten</button>
-      <p>Beta: verfolgt mehrere Fahrzeuge gleichzeitig. Linien A/B auf feste Straßenpunkte ziehen, Messband auf die Fahrbahn eingrenzen, reale Distanz eintragen — jedes Fahrzeug bekommt seine eigene Messung.</p>
+      <p>Funktioniert aus jedem Winkel: Punkt A und Punkt B auf zwei feste Straßenmerkmale ziehen (Laternenmast, Ampel, Schild) — die Messachse dazwischen richtet sich automatisch aus. Dann dieselben zwei Punkte auf der Karte antippen.</p>
       <input type="file" id="fileInput" accept="video/*" style="display:none">
     </div>
   </div>
@@ -143,7 +143,7 @@
   <div class="panel">
     <h2>Messstrecke</h2>
     <div class="row">
-      <label for="dist">Reale Distanz zwischen A und B auf der Straße:</label>
+      <label for="dist">Reale Distanz zwischen Punkt A und Punkt B:</label>
     </div>
     <div class="row">
       <input type="number" id="dist" value="20" min="3" max="200" step="0.5" inputmode="decimal"> <label>Meter</label>
@@ -162,6 +162,10 @@
     <div id="mapWrap" style="display:none">
       <div id="mapEl" style="height:300px;border-radius:12px;overflow:hidden;border:1px solid var(--line);margin-top:4px"></div>
       <div class="status" id="mapHint"></div>
+    </div>
+    <div class="row">
+      <label>Korridorbreite</label>
+      <input type="range" id="corr" min="4" max="30" value="10">
     </div>
     <div class="row">
       <label>Empfindlichkeit</label>
@@ -193,13 +197,14 @@
   </div>
 
   <details>
-    <summary>Wie das Multi-Tracking funktioniert · Grenzen der Beta</summary>
-    <p><b>Prinzip:</b> Statt einer Lichtschranke verfolgt die App jede Bewegung im Messband als eigenes Objekt über die Zeit. Die Geschwindigkeit kommt aus einer Regression über die gesamte sichtbare Fahrt — dadurch können mehrere Fahrzeuge gleichzeitig und in beide Richtungen gemessen werden. Der Maßstab (Pixel pro Meter) kommt aus der realen Distanz zwischen den Linien A und B.</p>
-    <p><b>Bekannte Grenzen der Beta:</b> Fahrzeuge, die sich im Bild gegenseitig verdecken (Überholen, dichter Gegenverkehr auf gleicher Bildhöhe), können zu einem Objekt verschmelzen. Frontalansicht (Fahrzeug kommt direkt auf die Kamera zu) wird noch nicht unterstützt — dafür seitlich oder schräg von oben filmen. Radfahrer und Fußgänger im Messband erzeugen Messwerte und sollten über das Messband ausgegrenzt oder aus dem Protokoll gestrichen werden.</p>
-    <p><b>Perspektive:</b> Der Pixel-Maßstab gilt exakt auf der Linie zwischen A und B. Je schräger der Blick, desto mehr weichen Messungen am Bildrand ab — Linien deshalb dort setzen, wo die Fahrzeuge tatsächlich fahren.</p>
+    <summary>Das Zwei-Punkte-Prinzip · alle Blickwinkel · Grenzen</summary>
+    <p><b>Prinzip:</b> Punkt A und Punkt B auf zwei feste Straßenmerkmale ziehen — egal ob die Kamera seitlich, schräg, von oben oder fast frontal auf die Straße schaut. Die Achse zwischen den Punkten ist die Fahrtrichtung; der Messkorridor legt sich automatisch darum. Jede Bewegung im Korridor wird als eigenes Objekt entlang der Achse verfolgt — mehrere Fahrzeuge gleichzeitig, beide Richtungen.</p>
+    <p><b>Kalibrierung:</b> Die reale Distanz zwischen den zwei Punkten per "Auf Karte messen" antippen (einmalig pro Standort). Das Tempolimit wird automatisch aus OpenStreetMap geholt, inkl. Nacht-Regelungen.</p>
+    <p><b>Korridorbreite:</b> So schmal, dass nur die Fahrbahn drinliegt (Bäume, Gehweg draußen), so breit, dass die Fahrzeuge ganz hineinpassen.</p>
+    <p><b>Grenzen:</b> Punkte, die im Bild sehr nah beieinander liegen (unter ~15 % der Bildbreite), machen die Messung ungenau — dann näher gelegene Referenzpunkte wählen. Fahrzeuge, die sich gegenseitig verdecken, können verschmelzen. Exakt auf der Fahrbahnachse stehend (Auto kommt pixelgenau frontal) gibt es kaum Bildbewegung — ein paar Meter seitlicher Versatz genügt.</p>
   </details>
 
-  <p class="footer-note">Beta-Version. Für die stabile Einzelmessung: <a href="./index.html">zur Hauptversion</a>. Es werden keine Aufnahmen gespeichert und keine Kennzeichen erfasst.</p>
+  <p class="footer-note">Beta. Für die stabile Einzelmessung: <a href="./index.html">zur Hauptversion</a>. Es werden keine Aufnahmen gespeichert und keine Kennzeichen erfasst.</p>
 </div>
 
 <script>
@@ -261,6 +266,7 @@
             tr.v = tr.n < 3 ? vNew : tr.v * 0.7 + vNew * 0.3;
           }
           tr.c = r.c; tr.w = Math.max(tr.w, r.w); tr.t = t; tr.n++;
+          tr.ws.push(r.w);
           tr.pts.push([t, r.c]);
         }
       }
@@ -269,7 +275,7 @@
         // Kein neuer Track, wenn der Blob praktisch auf einem bestehenden liegt
         for (const tr of active)
           if (Math.abs(r.c - tr.c) < tr.w * 0.9 + r.w * 0.5) return;
-        active.push({ c: r.c, w: r.w, v: 0, t, t0: t, n: 1, pts: [[t, r.c]] });
+        active.push({ c: r.c, w: r.w, v: 0, t, t0: t, n: 1, ws: [r.w], pts: [[t, r.c]] });
       });
       // Abschluss: 0.45 s nicht mehr gesehen
       for (let i = active.length - 1; i >= 0; i--) {
@@ -319,7 +325,14 @@
     return (n * stc - st * sc) / den; // px pro Sekunde, Vorzeichen = Richtung
   }
 
-  const api = { findRuns, createTracker, trackSlope };
+  // Typische (Median-)Breite eines Tracks – robuster als das Maximum,
+  // das durch Schatten und Verschmelzungen aufgebläht wird
+  function trackWidth(tr) {
+    const s = [...(tr.ws || [tr.w])].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  }
+
+  const api = { findRuns, createTracker, trackSlope, trackWidth };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TrackerCore = api;
 })(typeof self !== 'undefined' ? self : this);
@@ -338,10 +351,11 @@
   const state = {
     running: false, source: null,
     limitMode: '50',
-    lineA: 0.30, lineB: 0.70,
-    bandTop: 0.40, bandBot: 0.65,
+    ptA: { x: 0.28, y: 0.55 },   // Stage-Anteile, frei ziehbar
+    ptB: { x: 0.72, y: 0.55 },
     dragging: null, prevFrame: null,
     tracker: createTracker(),
+    axis: null,                   // aktuelle Achsgeometrie in Proc-Koordinaten
     measurements: [],
   };
 
@@ -466,7 +480,7 @@
     }
   });
 
-  // ---------- Linien & Messband ziehen ----------
+  // ---------- Punkte A/B ziehen ----------
   function pointerPos(e) {
     const r = stage.getBoundingClientRect();
     const cx = (e.touches ? e.touches[0].clientX : e.clientX);
@@ -477,22 +491,19 @@
       px: cx - r.left, py: cy - r.top, w: r.width, h: r.height
     };
   }
-  function nearestTarget(p) {
-    return [
-      ['lineA', Math.abs(p.px - state.lineA * p.w)],
-      ['lineB', Math.abs(p.px - state.lineB * p.w)],
-      ['bandTop', Math.abs(p.py - state.bandTop * p.h)],
-      ['bandBot', Math.abs(p.py - state.bandBot * p.h)],
-    ].sort((a, b) => a[1] - b[1])[0][0];
+  function onDown(e) {
+    if (!state.running) return;
+    const p = pointerPos(e);
+    const dA = Math.hypot(p.px - state.ptA.x * p.w, p.py - state.ptA.y * p.h);
+    const dB = Math.hypot(p.px - state.ptB.x * p.w, p.py - state.ptB.y * p.h);
+    state.dragging = dA < dB ? 'A' : 'B';
+    e.preventDefault();
   }
-  function onDown(e) { if (!state.running) return; state.dragging = nearestTarget(pointerPos(e)); e.preventDefault(); }
   function onMove(e) {
     if (!state.dragging) return;
     const p = pointerPos(e);
-    if (state.dragging === 'lineA') state.lineA = p.x;
-    else if (state.dragging === 'lineB') state.lineB = p.x;
-    else if (state.dragging === 'bandTop') state.bandTop = Math.min(p.y, state.bandBot - 0.05);
-    else state.bandBot = Math.max(p.y, state.bandTop + 0.05);
+    if (state.dragging === 'A') state.ptA = { x: p.x, y: p.y };
+    else state.ptB = { x: p.x, y: p.y };
     e.preventDefault();
   }
   function onUp() { if (state.dragging) { state.dragging = null; state.prevFrame = null; } }
@@ -527,8 +538,21 @@
   function stageToVidX(xf) { const p = fitParams(); return cl((xf * p.sw - p.offX) / p.dispW); }
   function stageToVidY(yf) { const p = fitParams(); return cl((yf * p.sh - p.offY) / p.dispH); }
   function vidToStageX(xf) { const p = fitParams(); return (xf * p.dispW + p.offX) / p.sw; }
+  function vidToStageY(yf) { const p = fitParams(); return (yf * p.dispH + p.offY) / p.sh; }
 
-  // ---------- Tracking-Erkennung ----------
+  // ---------- Achsgeometrie (in Proc-Pixeln) ----------
+  function computeAxis(w, h) {
+    const ax = stageToVidX(state.ptA.x) * w, ay = stageToVidY(state.ptA.y) * h;
+    const bx = stageToVidX(state.ptB.x) * w, by = stageToVidY(state.ptB.y) * h;
+    const dx = bx - ax, dy = by - ay;
+    const L = Math.hypot(dx, dy);
+    if (L < 12) return null;
+    const ux = dx / L, uy = dy / L;
+    const half = Math.max(3, (Number($('corr').value) / 100) * h);
+    return { ax, ay, ux, uy, qx: -uy, qy: ux, L, half, s0: -0.5 * L, nb: Math.round(2 * L) };
+  }
+
+  // ---------- Tracking-Erkennung entlang der Achse ----------
   function detect() {
     if (!video.videoWidth) return;
     const scale = PROC_W / video.videoWidth;
@@ -540,54 +564,61 @@
       frame = pctx.getImageData(0, 0, proc.width, proc.height);
     } catch (e) { return; }
 
+    const w = frame.width, h = frame.height;
+    const A = computeAxis(w, h);
+    state.axis = A;
+    if (!A) { setStatus('Punkte A und B weiter auseinanderziehen'); state.prevFrame = frame; return; }
+
     if (state.prevFrame && frame.data.length === state.prevFrame.data.length) {
       const t = nowS();
-      const w = frame.width, h = frame.height;
-      const y0 = Math.round(stageToVidY(state.bandTop) * h);
-      const y1 = Math.max(y0 + 2, Math.round(stageToVidY(state.bandBot) * h));
-      // Spaltenprofil: aktive Pixel (Luminanzdiff > 10) pro Spalte im Band
-      const prof = new Array(w).fill(0);
-      const c = frame.data, p = state.prevFrame.data;
-      for (let y = y0; y < y1; y++) {
-        let i = (y * w) * 4;
-        for (let x = 0; x < w; x++, i += 4) {
+      const c = frame.data, pv = state.prevFrame.data;
+      // Begrenzungsbox des erweiterten Korridors
+      const s1 = A.s0 + A.nb;
+      const ex0 = A.ax + A.ux * A.s0, ey0 = A.ay + A.uy * A.s0;
+      const ex1 = A.ax + A.ux * s1,  ey1 = A.ay + A.uy * s1;
+      const minX = Math.max(0, Math.floor(Math.min(ex0, ex1) - A.half));
+      const maxX = Math.min(w - 1, Math.ceil(Math.max(ex0, ex1) + A.half));
+      const minY = Math.max(0, Math.floor(Math.min(ey0, ey1) - A.half));
+      const maxY = Math.min(h - 1, Math.ceil(Math.max(ey0, ey1) + A.half));
+
+      const prof = new Array(A.nb).fill(0);
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const rx = x - A.ax, ry = y - A.ay;
+          const dd = rx * A.qx + ry * A.qy;
+          if (dd > A.half || dd < -A.half) continue;
+          const s = rx * A.ux + ry * A.uy;
+          if (s < A.s0 || s >= s1) continue;
+          const i = (y * w + x) * 4;
           const la = c[i] * .299 + c[i+1] * .587 + c[i+2] * .114;
-          const lb = p[i] * .299 + p[i+1] * .587 + p[i+2] * .114;
-          if (Math.abs(la - lb) > 10) prof[x]++;
+          const lb = pv[i] * .299 + pv[i+1] * .587 + pv[i+2] * .114;
+          if (Math.abs(la - lb) > 10) prof[Math.floor(s - A.s0)]++;
         }
       }
-      // Schwelle skaliert mit der Bandhöhe (validiert: ~11% der Bandzeilen bei Standard)
-      const bandH = y1 - y0;
+      // Schwelle skaliert mit der Korridorhöhe (validiert: ~11% der Zeilen bei Standard)
+      const rows = 2 * A.half;
       const frac = Math.max(0.02, (11 - Number($('sens').value)) * 0.037);
-      const cThr = Math.max(2, Math.round(bandH * frac));
+      const cThr = Math.max(2, Math.round(rows * frac));
       let runs = findRuns(prof, cThr, 5, 4);
-      // Mega-Blobs (Wind über die ganze Szene, Belichtungssprünge) sind keine Fahrzeuge
-      runs = runs.filter(r => r.w < w * 0.6);
+      runs = runs.filter(r => r.w < A.nb * 0.6);
       state.tracker.step(t, runs);
-      // Neu abgeschlossene Tracks als Messungen erfassen
       for (const tr of state.tracker.done) {
         if (tr.recorded) continue;
         tr.recorded = true;
-        recordTrack(tr);
+        recordTrack(tr, A);
       }
     }
     state.prevFrame = frame;
   }
 
-  function recordTrack(tr) {
+  function recordTrack(tr, A) {
     const dist = parseFloat($('dist').value);
     if (!dist || dist <= 0) { setStatus('Bitte gültige Distanz eingeben'); return; }
-    const slope = trackSlope(tr);            // px pro Sekunde (Proc-Auflösung)
+    const slope = trackSlope(tr);            // px/s entlang der Achse
     if (slope === null) return;
-    const pxA = stageToVidX(state.lineA) * PROC_W;
-    const pxB = stageToVidX(state.lineB) * PROC_W;
-    const pxAB = Math.abs(pxB - pxA);
-    if (pxAB < 8) { setStatus('Linien A und B weiter auseinander ziehen'); return; }
-    const kmh = Math.abs(slope) / (pxAB / dist) * 3.6;
+    const kmh = Math.abs(slope) / (A.L / dist) * 3.6;
     if (kmh > 200 || kmh < 2) return;
-    const goesRight = slope > 0;
-    const aLeft = pxA <= pxB;
-    const dir = (goesRight === aLeft) ? 'A→B' : 'B→A';
+    const dir = slope > 0 ? 'A→B' : 'B→A';
     const dur = tr.t - tr.t0;
     const limit = currentLimit();
     const over = kmh > limit;
@@ -610,52 +641,78 @@
   }
 
   // ---------- Overlay ----------
+  function procToStage(px, py, w, h) {
+    return [vidToStageX(px / w) * stage.clientWidth, vidToStageY(py / h) * stage.clientHeight];
+  }
   function drawOverlay() {
     const w = overlay.width = stage.clientWidth;
     const h = overlay.height = stage.clientHeight;
     octx.clearRect(0, 0, w, h);
-    const yT = state.bandTop * h, yB = state.bandBot * h;
+    const A = state.axis;
+    const pw = proc.width || 1, ph = proc.height || 1;
 
-    octx.fillStyle = 'rgba(0,0,0,.35)';
-    octx.fillRect(0, 0, w, yT);
-    octx.fillRect(0, yB, w, h - yB);
-    octx.strokeStyle = 'rgba(232,236,244,.7)'; octx.lineWidth = 1.5;
-    octx.setLineDash([4, 5]);
-    octx.beginPath(); octx.moveTo(0, yT); octx.lineTo(w, yT); octx.stroke();
-    octx.beginPath(); octx.moveTo(0, yB); octx.lineTo(w, yB); octx.stroke();
-    octx.setLineDash([]);
-    for (const y of [yT, yB]) {
-      octx.beginPath(); octx.arc(w - 26, y, 13, 0, Math.PI * 2);
-      octx.fillStyle = 'rgba(232,236,244,.18)'; octx.fill();
-      octx.strokeStyle = 'rgba(232,236,244,.8)'; octx.stroke();
-    }
+    if (A) {
+      const s1 = A.s0 + A.nb;
+      // Korridor als gedrehtes Rechteck
+      const corners = [
+        [A.ax + A.ux * A.s0 + A.qx * A.half, A.ay + A.uy * A.s0 + A.qy * A.half],
+        [A.ax + A.ux * s1  + A.qx * A.half, A.ay + A.uy * s1  + A.qy * A.half],
+        [A.ax + A.ux * s1  - A.qx * A.half, A.ay + A.uy * s1  - A.qy * A.half],
+        [A.ax + A.ux * A.s0 - A.qx * A.half, A.ay + A.uy * A.s0 - A.qy * A.half],
+      ].map(([x, y]) => procToStage(x, y, pw, ph));
+      octx.strokeStyle = 'rgba(232,236,244,.55)';
+      octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
+      octx.beginPath();
+      octx.moveTo(...corners[0]);
+      for (let i = 1; i < 4; i++) octx.lineTo(...corners[i]);
+      octx.closePath(); octx.stroke();
+      octx.setLineDash([]);
 
-    drawLine(state.lineA * w, yT, yB, 'A', '#5aa8ff');
-    drawLine(state.lineB * w, yT, yB, 'B', '#ffb020');
+      // Messtore bei A und B (senkrecht zur Achse)
+      for (const [sPos, color, label, pt] of [[0, '#5aa8ff', 'A', state.ptA], [A.L, '#ffb020', 'B', state.ptB]]) {
+        const gx = A.ax + A.ux * sPos, gy = A.ay + A.uy * sPos;
+        const [x1, y1] = procToStage(gx + A.qx * A.half, gy + A.qy * A.half, pw, ph);
+        const [x2, y2] = procToStage(gx - A.qx * A.half, gy - A.qy * A.half, pw, ph);
+        octx.strokeStyle = color; octx.lineWidth = 2;
+        octx.setLineDash([8, 6]);
+        octx.beginPath(); octx.moveTo(x1, y1); octx.lineTo(x2, y2); octx.stroke();
+        octx.setLineDash([]);
+        const hx = pt.x * w, hy = pt.y * h;
+        octx.beginPath(); octx.arc(hx, hy, 14, 0, Math.PI * 2);
+        octx.fillStyle = color + '33'; octx.fill();
+        octx.strokeStyle = color; octx.stroke();
+        octx.fillStyle = color;
+        octx.font = 'bold 15px "Share Tech Mono", monospace';
+        octx.fillText(label, hx - 5, hy - 20);
+      }
 
-    // Aktive Tracks als Boxen
-    for (const tr of state.tracker.active) {
-      if (tr.n < 3) continue;
-      const cx = vidToStageX(tr.c / PROC_W) * w;
-      const bw = (tr.w / PROC_W) * (fitParams().dispW);
-      octx.strokeStyle = '#4cd97b'; octx.lineWidth = 2;
-      octx.strokeRect(cx - bw / 2, yT + 4, bw, (yB - yT) - 8);
+      // Aktive Tracks als Punkte auf der Achse
+      for (const tr of state.tracker.active) {
+        if (tr.n < 3) continue;
+        const s = tr.c + A.s0;
+        const tx = A.ax + A.ux * s, ty = A.ay + A.uy * s;
+        const [sx, sy] = procToStage(tx, ty, pw, ph);
+        const trW = (tr.w / A.nb) * Math.hypot(
+          procToStage(A.ax + A.ux * A.nb, A.ay + A.uy * A.nb, pw, ph)[0] - procToStage(A.ax, A.ay, pw, ph)[0],
+          procToStage(A.ax + A.ux * A.nb, A.ay + A.uy * A.nb, pw, ph)[1] - procToStage(A.ax, A.ay, pw, ph)[1]);
+        octx.strokeStyle = '#4cd97b'; octx.lineWidth = 2;
+        octx.beginPath(); octx.arc(sx, sy, Math.max(10, trW / 2), 0, Math.PI * 2); octx.stroke();
+      }
+    } else {
+      // Punkte auch ohne gültige Achse anfassbar zeichnen
+      for (const [pt, color, label] of [[state.ptA, '#5aa8ff', 'A'], [state.ptB, '#ffb020', 'B']]) {
+        const hx = pt.x * w, hy = pt.y * h;
+        octx.beginPath(); octx.arc(hx, hy, 14, 0, Math.PI * 2);
+        octx.fillStyle = color + '33'; octx.fill();
+        octx.strokeStyle = color; octx.stroke();
+        octx.fillStyle = color;
+        octx.font = 'bold 15px "Share Tech Mono", monospace';
+        octx.fillText(label, hx - 5, hy - 20);
+      }
     }
   }
-  function drawLine(x, y1, y2, label, color) {
-    octx.strokeStyle = color; octx.lineWidth = 2;
-    octx.setLineDash([8, 6]);
-    octx.beginPath(); octx.moveTo(x, y1); octx.lineTo(x, y2); octx.stroke();
-    octx.setLineDash([]);
-    octx.fillStyle = color;
-    octx.font = 'bold 15px "Share Tech Mono", monospace';
-    octx.fillText(label, x - 5, y1 - 10);
-    octx.beginPath(); octx.arc(x, (y1 + y2) / 2, 14, 0, Math.PI * 2);
-    octx.fillStyle = color + '33'; octx.fill();
-    octx.strokeStyle = color; octx.stroke();
-  }
 
-  // ---------- Statistik / Log / Share / CSV ----------
+  // ---------- Statistik / Log ----------
   function v85(speeds) {
     const s = [...speeds].sort((a, b) => a - b);
     return s[Math.min(s.length - 1, Math.ceil(0.85 * s.length) - 1)];
@@ -681,6 +738,7 @@
     }
   }
 
+  // ---------- Share-Card ----------
   async function buildShareCard() {
     const n = state.measurements.length;
     const speeds = state.measurements.map(m => m.kmh);
@@ -761,7 +819,6 @@
     $('verdict').textContent = ''; $('verdict').className = 'verdict';
   });
 
-
   // ---------- Karten-Kalibrierung (GPS + Satellit + OSM-Tempolimit) ----------
   let map = null, ptA = null, ptB = null, mkA = null, mkB = null;
   $('btnMap').addEventListener('click', async () => {
@@ -799,14 +856,14 @@
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       { maxZoom: 21, maxNativeZoom: 19 }).addTo(map);
     setTimeout(() => map.invalidateSize(), 100);
-    $('mapHint').textContent = 'Punkt A antippen – dieselbe Stelle wie Linie A im Videobild';
+    $('mapHint').textContent = 'Punkt A antippen – dieselbe Stelle wie Punkt A im Videobild';
     map.on('click', e => {
       if (!ptA || (ptA && ptB)) {
         if (mkA) map.removeLayer(mkA);
         if (mkB) { map.removeLayer(mkB); mkB = null; }
         ptA = e.latlng; ptB = null;
         mkA = L.circleMarker(ptA, { radius: 8, color: '#5aa8ff' }).addTo(map);
-        $('mapHint').textContent = 'Punkt B antippen – dieselbe Stelle wie Linie B';
+        $('mapHint').textContent = 'Punkt B antippen – dieselbe Stelle wie Punkt B';
       } else {
         ptB = e.latlng;
         mkB = L.circleMarker(ptB, { radius: 8, color: '#ffb020' }).addTo(map);
