@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b0e14">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Tempo-Messer · Multi (Beta v0.9)</title>
+<title>Tempo-Messer · Multi (v1.1)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -101,7 +101,7 @@
 <body>
 <div class="app">
   <header>
-    <h1>TEMPO-MESSER <em>MULTI · BETA v0.9</em></h1>
+    <h1>TEMPO-MESSER <em>MULTI · v1.1</em></h1>
     <div class="zone">Limit: <b id="limitLabel">50</b> km/h</div>
   </header>
 
@@ -161,10 +161,15 @@
     </div>
     <div id="mapWrap" style="display:none">
       <div id="mapEl" style="height:300px;border-radius:12px;overflow:hidden;border:1px solid var(--line);margin-top:4px"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnGeo" style="flex:1">Standort erneut suchen</button>
+      </div>
       <div class="status" id="mapHint"></div>
-    </div>
-    <div class="row">
-      <button class="primary" id="btnAuto" style="flex:1">Auto-Setup: Achse selbst finden</button>
+      <div id="mapConfirm" style="display:none; gap:10px; margin-top:8px; align-items:center">
+        <span id="mapConfirmText" style="font-size:14px; color:var(--text); flex:1"></span>
+        <button class="primary" id="btnMapYes" style="min-height:40px; padding:8px 16px">Ja</button>
+        <button id="btnMapNo" style="min-height:40px; padding:8px 16px">Neu</button>
+      </div>
     </div>
     <div class="row">
       <button id="btnM" style="flex:1">Perspektiv-Punkt M: aus</button>
@@ -385,8 +390,7 @@
     ptM: null,   // optionaler Perspektiv-Punkt (realer Mittelpunkt der Strecke)
     dragging: null, bg: null,
     tracker: createTracker(),
-    axis: null,
-    auto: null,   // { heat: Float32Array, events, frames } waehrend Auto-Setup                   // aktuelle Achsgeometrie in Proc-Koordinaten
+    axis: null,                   // aktuelle Achsgeometrie in Proc-Koordinaten
     measurements: [],
   };
 
@@ -432,6 +436,7 @@
     resetDetection();
     video.play().catch(() => {});
     setStatus('Video geladen – Tracking läuft während der Wiedergabe');
+    requestGeo();
     requestAnimationFrame(loop);
     scheduleDecodeCheck();
     setTimeout(() => {
@@ -507,6 +512,7 @@
       resetDetection();
       keepAwake();
       setStatus('Multi-Tracking aktiv');
+      requestGeo();
       requestAnimationFrame(loop);
     } catch (err) {
       setStatus('Kamera nicht verfügbar (' + err.name + ') – Live braucht HTTPS');
@@ -560,7 +566,18 @@
     else state.ptM = p;
     e.preventDefault();
   }
-  function onUp() { if (state.dragging) { state.dragging = null; state.bg = null; } }
+  function onUp() {
+    if (state.dragging) {
+      state.dragging = null; state.bg = null;
+      // Gefuehrter Fluss: Punkte gesetzt, Distanz noch nicht kalibriert -> Karte anbieten
+      if (!state.mapPrompted && !state.mapDone && state.running) {
+        state.mapPrompted = true;
+        $('mapWrap').style.display = 'block';
+        if (!map) initMap(); else setTimeout(() => map.invalidateSize(), 100);
+        setStatus('Jetzt dieselben zwei Punkte auf der Karte antippen – Distanz wird berechnet');
+      }
+    }
+  }
   stage.addEventListener('mousedown', onDown);
   stage.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
@@ -631,7 +648,6 @@
     state.axis = A;
     const data = frame.data;
     const total = w * h;
-    if (state.auto && state.bg && state.bg.length === total) { autoCollect(data, w, h); return; }
     if (!state.bg || state.bg.length !== total) {
       // Guard: iOS liefert nach dem Start oft schwarze Frames – davon darf sich
       // das Hintergrundmodell nicht initialisieren (erzeugt sonst einen
@@ -704,7 +720,7 @@
     state.tracker.step(t, runs);
     state.diagN = (state.diagN || 0) + 1;
     if (state.diagN % 10 === 0) {
-      $('diag').textContent = 'v0.9 · Aktivität ' + (corrN ? Math.round(100 * actN / corrN) : 0) +
+      $('diag').textContent = 'v1.1 · Aktivität ' + (corrN ? Math.round(100 * actN / corrN) : 0) +
         '% · Blobs ' + runs.length + ' · Objekte ' + state.tracker.active.length +
         ' · Messungen ' + state.measurements.length;
     }
@@ -770,90 +786,6 @@
   function resetDetection() {
     state.bg = null;
     state.tracker = createTracker();
-  }
-
-  // ---------- Auto-Setup: Achse aus dem Verkehr lernen ----------
-  $('btnAuto').addEventListener('click', () => {
-    if (state.auto) { state.auto = null; setStatus('Auto-Setup abgebrochen'); return; }
-    if (!state.running) { setStatus('Erst Video laden oder Kamera starten, dann Auto-Setup'); return; }
-    state.auto = { heat: null, events: 0, frames: 0 };
-    state.bg = null;
-    setStatus('Auto-Setup: beobachte den Verkehr… (Video abspielen lassen)');
-  });
-
-  function autoCollect(data, w, h) {
-    const a = state.auto;
-    if (!a.heat || a.heat.length !== w * h) { a.heat = new Float32Array(w * h); a.events = 0; a.frames = 0; }
-    const bg = state.bg;
-    let ev = 0;
-    for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-      const lum = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
-      const d = lum - bg[i];
-      const ad = d < 0 ? -d : d;
-      if (ad > 12) { a.heat[i]++; ev++; bg[i] += d > 0 ? 0.5 : -0.5; }
-      else bg[i] += 0.2 * d;
-    }
-    a.events += ev; a.frames++;
-    if (a.frames % 10 === 0)
-      $('diag').textContent = 'Auto-Setup: ' + a.frames + ' Frames, Signal ' + Math.round(a.events / 1000) + 'k';
-    // Genug Signal: mindestens ~8s Material und deutliche Aktivitaet
-    if (a.frames > 240 && a.events > 25000) autoFit(w, h);
-    else if (a.frames > 1800) { // ~60s ohne genug Verkehr
-      state.auto = null;
-      setStatus('Auto-Setup: zu wenig Verkehr erkannt – nochmal versuchen oder Punkte manuell setzen');
-    }
-  }
-
-  function autoFit(w, h) {
-    const a = state.auto;
-    // Schwelle: nur substanziell aktive Pixel
-    let vals = [];
-    for (let i = 0; i < a.heat.length; i++) if (a.heat[i] > 2) vals.push(a.heat[i]);
-    if (vals.length < 200) { return; } // weiter sammeln
-    vals.sort((x, y) => x - y);
-    const thr = Math.max(3, vals[Math.floor(vals.length * 0.75)]);
-    // Gewichtete Statistik
-    let sw = 0, sx = 0, sy = 0;
-    for (let i = 0; i < a.heat.length; i++) {
-      const v = a.heat[i]; if (v < thr) continue;
-      const x = i % w, y = (i / w) | 0;
-      sw += v; sx += v * x; sy += v * y;
-    }
-    const cx = sx / sw, cy = sy / sw;
-    let cxx = 0, cxy = 0, cyy = 0;
-    for (let i = 0; i < a.heat.length; i++) {
-      const v = a.heat[i]; if (v < thr) continue;
-      const dx = (i % w) - cx, dy = ((i / w) | 0) - cy;
-      cxx += v * dx * dx; cxy += v * dx * dy; cyy += v * dy * dy;
-    }
-    cxx /= sw; cxy /= sw; cyy /= sw;
-    const theta = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
-    let ux = Math.cos(theta), uy = Math.sin(theta);
-    // Pruefen, ob das die grosse Eigenrichtung ist
-    const v1 = cxx * ux * ux + 2 * cxy * ux * uy + cyy * uy * uy;
-    const v2 = cxx * uy * uy - 2 * cxy * ux * uy + cyy * ux * ux;
-    if (v2 > v1) { const t = ux; ux = -uy; uy = t; }
-    // Perzentile entlang/quer
-    const ss = [], dd = [];
-    for (let i = 0; i < a.heat.length; i++) {
-      const v = a.heat[i]; if (v < thr) continue;
-      const dx = (i % w) - cx, dy = ((i / w) | 0) - cy;
-      ss.push(dx * ux + dy * uy);
-      dd.push(Math.abs(-dx * uy + dy * ux));
-    }
-    ss.sort((x, y) => x - y); dd.sort((x, y) => x - y);
-    const sA = ss[Math.floor(ss.length * 0.05)], sB = ss[Math.floor(ss.length * 0.95)];
-    const half = Math.max(6, dd[Math.floor(dd.length * 0.92)]);
-    const Ax = cx + ux * sA, Ay = cy + uy * sA;
-    const Bx = cx + ux * sB, By = cy + uy * sB;
-    // In Stage-Koordinaten uebernehmen
-    state.ptA = clampToVideo({ x: vidToStageX(Ax / w), y: vidToStageY(Ay / h) });
-    state.ptB = clampToVideo({ x: vidToStageX(Bx / w), y: vidToStageY(By / h) });
-    $('corr').value = Math.min(30, Math.max(4, Math.round(half / h * 100)));
-    state.auto = null;
-    state.bg = null;
-    state.tracker = createTracker();
-    setStatus('Achse automatisch gesetzt. Jetzt A und B auf der Karte antippen (Distanz) – fertig.');
   }
 
   // ---------- Overlay ----------
@@ -1045,8 +977,29 @@
     $('verdict').textContent = ''; $('verdict').className = 'verdict';
   });
 
+  // ---------- Standort: frueh anfordern und cachen ----------
+  state.geo = null;
+  function requestGeo() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      p => {
+        state.geo = [p.coords.latitude, p.coords.longitude];
+        if (map) {
+          map.setView(state.geo, 19);
+          if (geoDot) geoDot.setLatLng(state.geo);
+          $('mapHint').textContent = 'Standort gefunden – Punkt A antippen';
+        }
+      },
+      err => {
+        if (map) $('mapHint').textContent =
+          'Standort nicht verfügbar (' + err.code + ') – Freigabe: Safari aA-Menü → Website-Einstellungen → Standort → Erlauben. Oder Karte manuell verschieben.';
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  }
+
   // ---------- Karten-Kalibrierung (GPS + Satellit + OSM-Tempolimit) ----------
-  let map = null, ptA = null, ptB = null, mkA = null, mkB = null;
+  let map = null, ptA = null, ptB = null, mkA = null, mkB = null, geoDot = null;
+  $('btnGeo').addEventListener('click', () => { $('mapHint').textContent = 'Suche Standort…'; requestGeo(); });
   $('btnMap').addEventListener('click', async () => {
     const wrap = $('mapWrap');
     if (wrap.style.display === 'block') { wrap.style.display = 'none'; return; }
@@ -1071,16 +1024,17 @@
     $('mapHint').textContent = 'Karte lädt…';
     try { await loadLeaflet(); }
     catch (e) { $('mapHint').textContent = 'Karte konnte nicht geladen werden'; return; }
-    const center = await new Promise(res => {
-      if (!navigator.geolocation) return res([53.55, 10.0]);
-      navigator.geolocation.getCurrentPosition(
-        p => res([p.coords.latitude, p.coords.longitude]),
-        () => { $('mapHint').textContent = 'GPS nicht verfügbar – Karte manuell verschieben. '; res([53.55, 10.0]); },
-        { enableHighAccuracy: true, timeout: 8000 });
-    });
+    const center = state.geo || [53.55, 10.0];
+    if (!state.geo) requestGeo();   // fragt an und zentriert nach, sobald der Fix da ist
     map = L.map('mapEl').setView(center, 19);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       { maxZoom: 21, maxNativeZoom: 19 }).addTo(map);
+    // Strassennamen-Overlay (Satellitenbild allein hat keine Namen)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 21, maxNativeZoom: 19, opacity: 0.9 }).addTo(map);
+    // "Du bist hier"-Punkt
+    geoDot = L.circleMarker(center, { radius: 7, color: '#4cd97b', fillColor: '#4cd97b', fillOpacity: 0.7 })
+      .addTo(map).bindTooltip('Dein Standort');
     setTimeout(() => map.invalidateSize(), 100);
     $('mapHint').textContent = 'Punkt A antippen – dieselbe Stelle wie Punkt A im Videobild';
     map.on('click', e => {
@@ -1090,14 +1044,30 @@
         ptA = e.latlng; ptB = null;
         mkA = L.circleMarker(ptA, { radius: 8, color: '#5aa8ff' }).addTo(map);
         $('mapHint').textContent = 'Punkt B antippen – dieselbe Stelle wie Punkt B';
+        $('mapConfirm').style.display = 'none';
       } else {
         ptB = e.latlng;
         mkB = L.circleMarker(ptB, { radius: 8, color: '#ffb020' }).addTo(map);
         const d = haversine(ptA, ptB);
-        $('dist').value = d.toFixed(1);
-        $('mapHint').textContent = 'Distanz übernommen: ' + d.toFixed(1) + ' m. Neu antippen für neue Messung.';
-        fetchLimit((ptA.lat + ptB.lat) / 2, (ptA.lng + ptB.lng) / 2);
+        // Nicht still uebernehmen – dem Nutzer die Entscheidung lassen
+        $('mapConfirmText').textContent = 'Gemessene Distanz: ' + d.toFixed(1) + ' m – übernehmen?';
+        $('mapConfirm').style.display = 'flex';
+        $('mapConfirm').dataset.dist = d.toFixed(1);
       }
+    });
+    $('btnMapYes').addEventListener('click', () => {
+      $('dist').value = $('mapConfirm').dataset.dist;
+      $('mapConfirm').style.display = 'none';
+      $('mapHint').textContent = 'Distanz übernommen: ' + $('mapConfirm').dataset.dist + ' m ✓';
+      state.mapDone = true;
+      fetchLimit((ptA.lat + ptB.lat) / 2, (ptA.lng + ptB.lng) / 2);
+      setTimeout(() => { $('mapWrap').style.display = 'none'; }, 1200);
+    });
+    $('btnMapNo').addEventListener('click', () => {
+      if (mkA) map.removeLayer(mkA); if (mkB) map.removeLayer(mkB);
+      mkA = mkB = null; ptA = ptB = null;
+      $('mapConfirm').style.display = 'none';
+      $('mapHint').textContent = 'Neu: Punkt A antippen';
     });
   }
   function haversine(a, b) {
