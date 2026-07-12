@@ -164,6 +164,9 @@
       <div class="status" id="mapHint"></div>
     </div>
     <div class="row">
+      <button id="btnM" style="flex:1">Perspektiv-Punkt M: aus</button>
+    </div>
+    <div class="row">
       <label>Korridorbreite</label>
       <input type="range" id="corr" min="4" max="30" value="10">
     </div>
@@ -201,6 +204,7 @@
     <p><b>Prinzip:</b> Punkt A und Punkt B auf zwei feste Straßenmerkmale ziehen — egal ob die Kamera seitlich, schräg, von oben oder fast frontal auf die Straße schaut. Die Achse zwischen den Punkten ist die Fahrtrichtung; der Messkorridor legt sich automatisch darum. Jede Bewegung im Korridor wird als eigenes Objekt entlang der Achse verfolgt — mehrere Fahrzeuge gleichzeitig, beide Richtungen.</p>
     <p><b>Kalibrierung:</b> Die reale Distanz zwischen den zwei Punkten per "Auf Karte messen" antippen (einmalig pro Standort). Das Tempolimit wird automatisch aus OpenStreetMap geholt, inkl. Nacht-Regelungen.</p>
     <p><b>Korridorbreite:</b> So schmal, dass nur die Fahrbahn drinliegt (Bäume, Gehweg draußen), so breit, dass die Fahrzeuge ganz hineinpassen.</p>
+    <p><b>Perspektiv-Punkt M (für Schrägsicht vom Straßenrand):</b> Bei stark schrägem Blick bewegt sich ein gleichmäßig fahrendes Auto ungleichmäßig durchs Bild — die Messung würde systematisch danebenliegen. Dann M aktivieren und im Videobild auf den <i>realen Mittelpunkt</i> der Strecke ziehen (auf der Satellitenkarte der halbe Weg zwischen den beiden Markern). Drei Punkte legen die Verzerrung exakt fest. Bei Sicht von oben oder seitlich ist M nicht nötig.</p>
     <p><b>Grenzen:</b> Punkte, die im Bild sehr nah beieinander liegen (unter ~15 % der Bildbreite), machen die Messung ungenau — dann näher gelegene Referenzpunkte wählen. Fahrzeuge, die sich gegenseitig verdecken, können verschmelzen. Exakt auf der Fahrbahnachse stehend (Auto kommt pixelgenau frontal) gibt es kaum Bildbewegung — ein paar Meter seitlicher Versatz genügt.</p>
   </details>
 
@@ -248,10 +252,13 @@
     const done = [];
 
     function step(t, runs) {
-      // Vorhersage + Zuordnung (nearest neighbor)
+      // Vorhersage + Zuordnung (nearest neighbor).
+      // Zuletzt gesehene Tracks zuerst, damit ausgefahrene Tracks am Rand
+      // laufenden Fahrzeugen nicht die Zuordnung stehlen.
       for (const tr of active) tr.pred = tr.c + tr.v * (t - tr.t);
       const used = new Set();
-      for (const tr of active) {
+      const ordered = [...active].sort((a, b) => b.t - a.t);
+      for (const tr of ordered) {
         let best = -1, bd = Infinity;
         runs.forEach((r, i) => {
           if (used.has(i)) return;
@@ -290,8 +297,23 @@
       return active;
     }
 
-    // Zeitlich überlappende Tracks gleicher Richtung sind Fragmente desselben
-    // Fahrzeugs (Kante, Schatten) – der Track mit mehr Beobachtungen gewinnt.
+    // Position eines Tracks zum Zeitpunkt t (lineare Interpolation)
+    function posAt(tr, t) {
+      const pts = tr.pts;
+      if (t <= pts[0][0]) return pts[0][1];
+      if (t >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i][0] >= t) {
+          const t0 = pts[i - 1][0], c0 = pts[i - 1][1];
+          const t1 = pts[i][0], c1 = pts[i][1];
+          return c0 + (c1 - c0) * (t - t0) / ((t1 - t0) || 1e-9);
+        }
+      }
+      return pts[pts.length - 1][1];
+    }
+
+    // Fragmente desselben Fahrzeugs (Kante, Schatten) überlappen zeitlich UND
+    // örtlich. Kolonnenfahrzeuge überlappen nur zeitlich – die bleiben getrennt.
     function pushDeduped(tr) {
       const dir = Math.sign(tr.pts[tr.pts.length - 1][1] - tr.pts[0][1]);
       for (let i = 0; i < done.length; i++) {
@@ -300,7 +322,10 @@
         if (oDir !== dir) continue;
         const overlap = Math.min(tr.t, o.t) - Math.max(tr.t0, o.t0);
         const minDur = Math.min(tr.t - tr.t0, o.t - o.t0);
-        if (overlap > 0.4 * minDur) {
+        if (overlap <= 0.4 * minDur) continue;
+        const tm = (Math.max(tr.t0, o.t0) + Math.min(tr.t, o.t)) / 2;
+        const gap = Math.abs(posAt(tr, tm) - posAt(o, tm));
+        if (gap < Math.max(tr.w, o.w)) {
           if (tr.n > o.n) { if (o.recorded) tr.recorded = true; done[i] = tr; }
           return;
         }
@@ -346,14 +371,15 @@
   const proc = document.createElement('canvas');
   const pctx = proc.getContext('2d', { willReadFrequently: true });
   const PROC_W = 240;
-  const { findRuns, createTracker, trackSlope } = window.TrackerCore;
+  const { findRuns, createTracker, trackSlope, trackWidth } = window.TrackerCore;
 
   const state = {
     running: false, source: null,
     limitMode: '50',
     ptA: { x: 0.28, y: 0.55 },   // Stage-Anteile, frei ziehbar
     ptB: { x: 0.72, y: 0.55 },
-    dragging: null, prevFrame: null,
+    ptM: null,   // optionaler Perspektiv-Punkt (realer Mittelpunkt der Strecke)
+    dragging: null, bg: null,
     tracker: createTracker(),
     axis: null,                   // aktuelle Achsgeometrie in Proc-Koordinaten
     measurements: [],
@@ -422,10 +448,12 @@
       if (decodeChecks < 17) { setTimeout(runDecodeCheck, 700); return; }
       if (!video.videoWidth) { showFormatWarn(); return; }
     }
-    proc.width = 32; proc.height = 32;
+    const chk = document.createElement('canvas');
+    chk.width = 32; chk.height = 32;
+    const cctx = chk.getContext('2d');
     try {
-      pctx.drawImage(video, 0, 0, 32, 32);
-      const d = pctx.getImageData(0, 0, 32, 32).data;
+      cctx.drawImage(video, 0, 0, 32, 32);
+      const d = cctx.getImageData(0, 0, 32, 32).data;
       let sum = 0;
       for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i+1] + d[i+2];
       if (sum < 500) {
@@ -491,22 +519,35 @@
       px: cx - r.left, py: cy - r.top, w: r.width, h: r.height
     };
   }
+  $('btnM').addEventListener('click', () => {
+    if (state.ptM) { state.ptM = null; $('btnM').textContent = 'Perspektiv-Punkt M: aus'; }
+    else {
+      state.ptM = { x: (state.ptA.x + state.ptB.x) / 2, y: (state.ptA.y + state.ptB.y) / 2 };
+      $('btnM').textContent = 'Perspektiv-Punkt M: an';
+      setStatus('M auf den REALEN Mittelpunkt der Strecke ziehen (auf der Karte: halber Weg zwischen den Markern)');
+    }
+  });
   function onDown(e) {
     if (!state.running) return;
     const p = pointerPos(e);
-    const dA = Math.hypot(p.px - state.ptA.x * p.w, p.py - state.ptA.y * p.h);
-    const dB = Math.hypot(p.px - state.ptB.x * p.w, p.py - state.ptB.y * p.h);
-    state.dragging = dA < dB ? 'A' : 'B';
+    const cand = [
+      ['A', Math.hypot(p.px - state.ptA.x * p.w, p.py - state.ptA.y * p.h)],
+      ['B', Math.hypot(p.px - state.ptB.x * p.w, p.py - state.ptB.y * p.h)],
+    ];
+    if (state.ptM) cand.push(['M', Math.hypot(p.px - state.ptM.x * p.w, p.py - state.ptM.y * p.h)]);
+    cand.sort((a, b) => a[1] - b[1]);
+    state.dragging = cand[0][0];
     e.preventDefault();
   }
   function onMove(e) {
     if (!state.dragging) return;
     const p = pointerPos(e);
     if (state.dragging === 'A') state.ptA = { x: p.x, y: p.y };
-    else state.ptB = { x: p.x, y: p.y };
+    else if (state.dragging === 'B') state.ptB = { x: p.x, y: p.y };
+    else state.ptM = { x: p.x, y: p.y };
     e.preventDefault();
   }
-  function onUp() { if (state.dragging) { state.dragging = null; state.prevFrame = null; } }
+  function onUp() { if (state.dragging) { state.dragging = null; state.bg = null; } }
   stage.addEventListener('mousedown', onDown);
   stage.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
@@ -549,10 +590,18 @@
     if (L < 12) return null;
     const ux = dx / L, uy = dy / L;
     const half = Math.max(3, (Number($('corr').value) / 100) * h);
-    return { ax, ay, ux, uy, qx: -uy, qy: ux, L, half, s0: -0.5 * L, nb: Math.round(2 * L) };
+    let sM = null;
+    if (state.ptM) {
+      const mx = stageToVidX(state.ptM.x) * w, my = stageToVidY(state.ptM.y) * h;
+      const s = (mx - ax) * ux + (my - ay) * uy;
+      if (s > 0.1 * L && s < 0.9 * L) sM = s;   // sonst unplausibel platziert
+    }
+    return { ax, ay, ux, uy, qx: -uy, qy: ux, L, half, s0: -0.5 * L, nb: Math.round(2 * L), sM };
   }
 
   // ---------- Tracking-Erkennung entlang der Achse ----------
+  // Hintergrund-Modell statt Frame-Differenz: erkennt auch einfarbige,
+  // langsame Fahrzeuge am ganzen Fahrzeugkoerper (Stresstest-Fix).
   function detect() {
     if (!video.videoWidth) return;
     const scale = PROC_W / video.videoWidth;
@@ -567,56 +616,94 @@
     const w = frame.width, h = frame.height;
     const A = computeAxis(w, h);
     state.axis = A;
-    if (!A) { setStatus('Punkte A und B weiter auseinanderziehen'); state.prevFrame = frame; return; }
+    const data = frame.data;
+    const total = w * h;
+    if (!state.bg || state.bg.length !== total) {
+      state.bg = new Float32Array(total);
+      for (let i = 0, j = 0; i < total; i++, j += 4)
+        state.bg[i] = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
+      return; // erster Frame initialisiert nur das Hintergrundmodell
+    }
+    if (!A) { setStatus('Punkte A und B weiter auseinanderziehen'); return; }
 
-    if (state.prevFrame && frame.data.length === state.prevFrame.data.length) {
-      const t = nowS();
-      const c = frame.data, pv = state.prevFrame.data;
-      // Begrenzungsbox des erweiterten Korridors
-      const s1 = A.s0 + A.nb;
-      const ex0 = A.ax + A.ux * A.s0, ey0 = A.ay + A.uy * A.s0;
-      const ex1 = A.ax + A.ux * s1,  ey1 = A.ay + A.uy * s1;
-      const minX = Math.max(0, Math.floor(Math.min(ex0, ex1) - A.half));
-      const maxX = Math.min(w - 1, Math.ceil(Math.max(ex0, ex1) + A.half));
-      const minY = Math.max(0, Math.floor(Math.min(ey0, ey1) - A.half));
-      const maxY = Math.min(h - 1, Math.ceil(Math.max(ey0, ey1) + A.half));
+    const t = nowS();
+    const s1 = A.s0 + A.nb;
+    const ex0 = A.ax + A.ux * A.s0, ey0 = A.ay + A.uy * A.s0;
+    const ex1 = A.ax + A.ux * s1,  ey1 = A.ay + A.uy * s1;
+    const minX = Math.max(0, Math.floor(Math.min(ex0, ex1) - A.half));
+    const maxX = Math.min(w - 1, Math.ceil(Math.max(ex0, ex1) + A.half));
+    const minY = Math.max(0, Math.floor(Math.min(ey0, ey1) - A.half));
+    const maxY = Math.min(h - 1, Math.ceil(Math.max(ey0, ey1) + A.half));
 
-      const prof = new Array(A.nb).fill(0);
-      for (let y = minY; y <= maxY; y++) {
-        for (let x = minX; x <= maxX; x++) {
+    const bg = state.bg;
+    const prof = new Array(A.nb).fill(0);
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const idx = y * w + x;
+        const j = idx * 4;
+        const lum = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
+        const d = lum - bg[idx];
+        const ad = d < 0 ? -d : d;
+        if (ad > 12) {
           const rx = x - A.ax, ry = y - A.ay;
           const dd = rx * A.qx + ry * A.qy;
-          if (dd > A.half || dd < -A.half) continue;
-          const s = rx * A.ux + ry * A.uy;
-          if (s < A.s0 || s >= s1) continue;
-          const i = (y * w + x) * 4;
-          const la = c[i] * .299 + c[i+1] * .587 + c[i+2] * .114;
-          const lb = pv[i] * .299 + pv[i+1] * .587 + pv[i+2] * .114;
-          if (Math.abs(la - lb) > 10) prof[Math.floor(s - A.s0)]++;
+          if (dd <= A.half && dd >= -A.half) {
+            const s = rx * A.ux + ry * A.uy;
+            if (s >= A.s0 && s < s1) prof[Math.floor(s - A.s0)]++;
+          }
+          bg[idx] += d > 0 ? 0.5 : -0.5;
+        } else {
+          bg[idx] += 0.2 * d;
         }
       }
-      // Schwelle skaliert mit der Korridorhöhe (validiert: ~11% der Zeilen bei Standard)
-      const rows = 2 * A.half;
-      const frac = Math.max(0.02, (11 - Number($('sens').value)) * 0.037);
-      const cThr = Math.max(2, Math.round(rows * frac));
-      let runs = findRuns(prof, cThr, 5, 4);
-      runs = runs.filter(r => r.w < A.nb * 0.6);
-      state.tracker.step(t, runs);
-      for (const tr of state.tracker.done) {
-        if (tr.recorded) continue;
-        tr.recorded = true;
-        recordTrack(tr, A);
-      }
     }
-    state.prevFrame = frame;
+    const rows = 2 * A.half;
+    const frac = Math.max(0.02, (11 - Number($('sens').value)) * 0.037);
+    const cThr = Math.max(2, Math.round(rows * frac));
+    let runs = findRuns(prof, cThr, 5, 4);
+    runs = runs.filter(r => r.w < A.nb * 0.6);
+    state.tracker.step(t, runs);
+    for (const tr of state.tracker.done) {
+      if (tr.recorded) continue;
+      tr.recorded = true;
+      recordTrack(tr, A);
+    }
+  }
+
+  // 1D-Homographie: Achsposition s (ab Tor A) -> Meter.
+  // Fixiert durch m(0)=0, m(L)=D und den realen Mittelpunkt m(sM)=D/2.
+  function projectiveMap(L, D, sM) {
+    const mM = D / 2;
+    const c = (D / L - mM / sM) / (mM - D);
+    const a = D * (c * L + 1) / L;
+    return s => (a * s) / (c * s + 1);
   }
 
   function recordTrack(tr, A) {
     const dist = parseFloat($('dist').value);
     if (!dist || dist <= 0) { setStatus('Bitte gültige Distanz eingeben'); return; }
+    // Leitplanke 1: Messstrecke im Bild zu kurz -> Perspektive zu stark gestaucht
+    if (A.L < 40) { setStatus('Punkte im Bild zu nah beieinander – Messung unzuverlässig, Punkte oder Standort ändern'); return; }
+    // Leitplanke 2: Fahrzeug groesser als die Messstrecke -> unmessbar
+    if (trackWidth(tr) > 0.8 * A.L) { setStatus('Fahrzeug größer als die Messstrecke im Bild – Punkte weiter auseinander wählen'); return; }
     const slope = trackSlope(tr);            // px/s entlang der Achse
     if (slope === null) return;
-    const kmh = Math.abs(slope) / (A.L / dist) * 3.6;
+    let kmh;
+    if (A.sM) {
+      // Perspektiv-korrigiert: Trackpunkte in Meter umrechnen, dann Regression
+      const map = projectiveMap(A.L, dist, A.sM);
+      const pts = tr.pts;
+      const seg = pts.slice(Math.floor(pts.length * 0.15), Math.ceil(pts.length * 0.85))
+        .map(([t, c]) => [t, map(c + A.s0)]);
+      if (seg.length < 4) return;
+      let n = seg.length, st = 0, sm = 0, stt = 0, stm = 0;
+      for (const [t, m] of seg) { st += t; sm += m; stt += t * t; stm += t * m; }
+      const den = n * stt - st * st;
+      if (Math.abs(den) < 1e-9) return;
+      kmh = Math.abs((n * stm - st * sm) / den) * 3.6;
+    } else {
+      kmh = Math.abs(slope) / (A.L / dist) * 3.6;
+    }
     if (kmh > 200 || kmh < 2) return;
     const dir = slope > 0 ? 'A→B' : 'B→A';
     const dur = tr.t - tr.t0;
@@ -636,7 +723,7 @@
   }
 
   function resetDetection() {
-    state.prevFrame = null;
+    state.bg = null;
     state.tracker = createTracker();
   }
 
@@ -684,6 +771,16 @@
         octx.fillStyle = color;
         octx.font = 'bold 15px "Share Tech Mono", monospace';
         octx.fillText(label, hx - 5, hy - 20);
+      }
+
+      if (state.ptM) {
+        const hx = state.ptM.x * w, hy = state.ptM.y * h;
+        octx.beginPath(); octx.arc(hx, hy, 12, 0, Math.PI * 2);
+        octx.fillStyle = 'rgba(232,236,244,.2)'; octx.fill();
+        octx.strokeStyle = '#e8ecf4'; octx.stroke();
+        octx.fillStyle = '#e8ecf4';
+        octx.font = 'bold 14px "Share Tech Mono", monospace';
+        octx.fillText('M', hx - 5, hy - 18);
       }
 
       // Aktive Tracks als Punkte auf der Achse
@@ -901,6 +998,8 @@
       setStatus('Tempolimit laut OpenStreetMap: ' + tags.maxspeed + (cond ? ' (nachts abweichend: ' + cond + ')' : ''));
     } catch (e) {}
   }
+
+  $('corr').addEventListener('input', () => { state.bg = null; });
 
   const setStatus = t => { $('statusText').textContent = t; };
   refreshLimitLabel();
