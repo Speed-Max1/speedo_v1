@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b0e14">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Tempo-Messer · Multi (Beta)</title>
+<title>Tempo-Messer · Multi (Beta v0.9)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -101,7 +101,7 @@
 <body>
 <div class="app">
   <header>
-    <h1>TEMPO-MESSER <em>MULTI · BETA</em></h1>
+    <h1>TEMPO-MESSER <em>MULTI · BETA v0.9</em></h1>
     <div class="zone">Limit: <b id="limitLabel">50</b> km/h</div>
   </header>
 
@@ -164,6 +164,9 @@
       <div class="status" id="mapHint"></div>
     </div>
     <div class="row">
+      <button class="primary" id="btnAuto" style="flex:1">Auto-Setup: Achse selbst finden</button>
+    </div>
+    <div class="row">
       <button id="btnM" style="flex:1">Perspektiv-Punkt M: aus</button>
     </div>
     <div class="row">
@@ -175,6 +178,7 @@
       <input type="range" id="sens" min="1" max="10" value="8">
     </div>
     <div class="status" id="status"><span id="statusText">Keine Quelle</span></div>
+    <div class="status" id="diag"></div>
   </div>
 
   <div class="panel">
@@ -381,7 +385,8 @@
     ptM: null,   // optionaler Perspektiv-Punkt (realer Mittelpunkt der Strecke)
     dragging: null, bg: null,
     tracker: createTracker(),
-    axis: null,                   // aktuelle Achsgeometrie in Proc-Koordinaten
+    axis: null,
+    auto: null,   // { heat: Float32Array, events, frames } waehrend Auto-Setup                   // aktuelle Achsgeometrie in Proc-Koordinaten
     measurements: [],
   };
 
@@ -539,12 +544,20 @@
     state.dragging = cand[0][0];
     e.preventDefault();
   }
+  // Punkte duerfen nur im sichtbaren Videobereich liegen (nicht im schwarzen Rand)
+  function clampToVideo(p) {
+    const f = fitParams();
+    return {
+      x: Math.min((f.offX + f.dispW) / f.sw - 0.02, Math.max(f.offX / f.sw + 0.02, p.x)),
+      y: Math.min((f.offY + f.dispH) / f.sh - 0.02, Math.max(f.offY / f.sh + 0.02, p.y)),
+    };
+  }
   function onMove(e) {
     if (!state.dragging) return;
-    const p = pointerPos(e);
-    if (state.dragging === 'A') state.ptA = { x: p.x, y: p.y };
-    else if (state.dragging === 'B') state.ptB = { x: p.x, y: p.y };
-    else state.ptM = { x: p.x, y: p.y };
+    const p = clampToVideo(pointerPos(e));
+    if (state.dragging === 'A') state.ptA = p;
+    else if (state.dragging === 'B') state.ptB = p;
+    else state.ptM = p;
     e.preventDefault();
   }
   function onUp() { if (state.dragging) { state.dragging = null; state.bg = null; } }
@@ -618,6 +631,7 @@
     state.axis = A;
     const data = frame.data;
     const total = w * h;
+    if (state.auto && state.bg && state.bg.length === total) { autoCollect(data, w, h); return; }
     if (!state.bg || state.bg.length !== total) {
       // Guard: iOS liefert nach dem Start oft schwarze Frames – davon darf sich
       // das Hintergrundmodell nicht initialisieren (erzeugt sonst einen
@@ -688,6 +702,12 @@
     let runs = findRuns(prof, cThr, 5, 4);
     runs = runs.filter(r => r.w < A.nb * 0.6);
     state.tracker.step(t, runs);
+    state.diagN = (state.diagN || 0) + 1;
+    if (state.diagN % 10 === 0) {
+      $('diag').textContent = 'v0.9 · Aktivität ' + (corrN ? Math.round(100 * actN / corrN) : 0) +
+        '% · Blobs ' + runs.length + ' · Objekte ' + state.tracker.active.length +
+        ' · Messungen ' + state.measurements.length;
+    }
     for (const tr of state.tracker.done) {
       if (tr.recorded) continue;
       tr.recorded = true;
@@ -752,6 +772,90 @@
     state.tracker = createTracker();
   }
 
+  // ---------- Auto-Setup: Achse aus dem Verkehr lernen ----------
+  $('btnAuto').addEventListener('click', () => {
+    if (state.auto) { state.auto = null; setStatus('Auto-Setup abgebrochen'); return; }
+    if (!state.running) { setStatus('Erst Video laden oder Kamera starten, dann Auto-Setup'); return; }
+    state.auto = { heat: null, events: 0, frames: 0 };
+    state.bg = null;
+    setStatus('Auto-Setup: beobachte den Verkehr… (Video abspielen lassen)');
+  });
+
+  function autoCollect(data, w, h) {
+    const a = state.auto;
+    if (!a.heat || a.heat.length !== w * h) { a.heat = new Float32Array(w * h); a.events = 0; a.frames = 0; }
+    const bg = state.bg;
+    let ev = 0;
+    for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+      const lum = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
+      const d = lum - bg[i];
+      const ad = d < 0 ? -d : d;
+      if (ad > 12) { a.heat[i]++; ev++; bg[i] += d > 0 ? 0.5 : -0.5; }
+      else bg[i] += 0.2 * d;
+    }
+    a.events += ev; a.frames++;
+    if (a.frames % 10 === 0)
+      $('diag').textContent = 'Auto-Setup: ' + a.frames + ' Frames, Signal ' + Math.round(a.events / 1000) + 'k';
+    // Genug Signal: mindestens ~8s Material und deutliche Aktivitaet
+    if (a.frames > 240 && a.events > 25000) autoFit(w, h);
+    else if (a.frames > 1800) { // ~60s ohne genug Verkehr
+      state.auto = null;
+      setStatus('Auto-Setup: zu wenig Verkehr erkannt – nochmal versuchen oder Punkte manuell setzen');
+    }
+  }
+
+  function autoFit(w, h) {
+    const a = state.auto;
+    // Schwelle: nur substanziell aktive Pixel
+    let vals = [];
+    for (let i = 0; i < a.heat.length; i++) if (a.heat[i] > 2) vals.push(a.heat[i]);
+    if (vals.length < 200) { return; } // weiter sammeln
+    vals.sort((x, y) => x - y);
+    const thr = Math.max(3, vals[Math.floor(vals.length * 0.75)]);
+    // Gewichtete Statistik
+    let sw = 0, sx = 0, sy = 0;
+    for (let i = 0; i < a.heat.length; i++) {
+      const v = a.heat[i]; if (v < thr) continue;
+      const x = i % w, y = (i / w) | 0;
+      sw += v; sx += v * x; sy += v * y;
+    }
+    const cx = sx / sw, cy = sy / sw;
+    let cxx = 0, cxy = 0, cyy = 0;
+    for (let i = 0; i < a.heat.length; i++) {
+      const v = a.heat[i]; if (v < thr) continue;
+      const dx = (i % w) - cx, dy = ((i / w) | 0) - cy;
+      cxx += v * dx * dx; cxy += v * dx * dy; cyy += v * dy * dy;
+    }
+    cxx /= sw; cxy /= sw; cyy /= sw;
+    const theta = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    let ux = Math.cos(theta), uy = Math.sin(theta);
+    // Pruefen, ob das die grosse Eigenrichtung ist
+    const v1 = cxx * ux * ux + 2 * cxy * ux * uy + cyy * uy * uy;
+    const v2 = cxx * uy * uy - 2 * cxy * ux * uy + cyy * ux * ux;
+    if (v2 > v1) { const t = ux; ux = -uy; uy = t; }
+    // Perzentile entlang/quer
+    const ss = [], dd = [];
+    for (let i = 0; i < a.heat.length; i++) {
+      const v = a.heat[i]; if (v < thr) continue;
+      const dx = (i % w) - cx, dy = ((i / w) | 0) - cy;
+      ss.push(dx * ux + dy * uy);
+      dd.push(Math.abs(-dx * uy + dy * ux));
+    }
+    ss.sort((x, y) => x - y); dd.sort((x, y) => x - y);
+    const sA = ss[Math.floor(ss.length * 0.05)], sB = ss[Math.floor(ss.length * 0.95)];
+    const half = Math.max(6, dd[Math.floor(dd.length * 0.92)]);
+    const Ax = cx + ux * sA, Ay = cy + uy * sA;
+    const Bx = cx + ux * sB, By = cy + uy * sB;
+    // In Stage-Koordinaten uebernehmen
+    state.ptA = clampToVideo({ x: vidToStageX(Ax / w), y: vidToStageY(Ay / h) });
+    state.ptB = clampToVideo({ x: vidToStageX(Bx / w), y: vidToStageY(By / h) });
+    $('corr').value = Math.min(30, Math.max(4, Math.round(half / h * 100)));
+    state.auto = null;
+    state.bg = null;
+    state.tracker = createTracker();
+    setStatus('Achse automatisch gesetzt. Jetzt A und B auf der Karte antippen (Distanz) – fertig.');
+  }
+
   // ---------- Overlay ----------
   function procToStage(px, py, w, h) {
     return [vidToStageX(px / w) * stage.clientWidth, vidToStageY(py / h) * stage.clientHeight];
@@ -772,12 +876,14 @@
         [A.ax + A.ux * s1  - A.qx * A.half, A.ay + A.uy * s1  - A.qy * A.half],
         [A.ax + A.ux * A.s0 - A.qx * A.half, A.ay + A.uy * A.s0 - A.qy * A.half],
       ].map(([x, y]) => procToStage(x, y, pw, ph));
-      octx.strokeStyle = 'rgba(232,236,244,.55)';
-      octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
       octx.beginPath();
       octx.moveTo(...corners[0]);
       for (let i = 1; i < 4; i++) octx.lineTo(...corners[i]);
-      octx.closePath(); octx.stroke();
+      octx.closePath();
+      octx.strokeStyle = 'rgba(0,0,0,.8)'; octx.lineWidth = 3.5; octx.setLineDash([]);
+      octx.stroke();
+      octx.strokeStyle = 'rgba(232,236,244,.9)'; octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
+      octx.stroke();
       octx.setLineDash([]);
 
       // Messtore bei A und B (senkrecht zur Achse)
