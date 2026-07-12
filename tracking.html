@@ -619,9 +619,16 @@
     const data = frame.data;
     const total = w * h;
     if (!state.bg || state.bg.length !== total) {
+      // Guard: iOS liefert nach dem Start oft schwarze Frames – davon darf sich
+      // das Hintergrundmodell nicht initialisieren (erzeugt sonst einen
+      // Dauer-Blob ueber die ganze Achse, der alle Messungen blockiert)
+      let sum = 0, cnt = 0;
+      for (let j = 0; j < data.length; j += 64) { sum += data[j]; cnt++; }
+      if (sum / cnt < 8) { setStatus('Warte auf Videobild…'); return; }
       state.bg = new Float32Array(total);
       for (let i = 0, j = 0; i < total; i++, j += 4)
         state.bg[i] = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
+      state.anomal = 0;
       return; // erster Frame initialisiert nur das Hintergrundmodell
     }
     if (!A) { setStatus('Punkte A und B weiter auseinanderziehen'); return; }
@@ -637,6 +644,7 @@
 
     const bg = state.bg;
     const prof = new Array(A.nb).fill(0);
+    let actN = 0, corrN = 0;
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         const idx = y * w + x;
@@ -644,18 +652,35 @@
         const lum = data[j] * .299 + data[j+1] * .587 + data[j+2] * .114;
         const d = lum - bg[idx];
         const ad = d < 0 ? -d : d;
+        const rx = x - A.ax, ry = y - A.ay;
+        const dd = rx * A.qx + ry * A.qy;
+        const inCorr = dd <= A.half && dd >= -A.half;
+        if (inCorr) corrN++;
         if (ad > 12) {
-          const rx = x - A.ax, ry = y - A.ay;
-          const dd = rx * A.qx + ry * A.qy;
-          if (dd <= A.half && dd >= -A.half) {
+          if (inCorr) {
             const s = rx * A.ux + ry * A.uy;
-            if (s >= A.s0 && s < s1) prof[Math.floor(s - A.s0)]++;
+            if (s >= A.s0 && s < s1) { prof[Math.floor(s - A.s0)]++; actN++; }
           }
           bg[idx] += d > 0 ? 0.5 : -0.5;
         } else {
           bg[idx] += 0.2 * d;
         }
       }
+    }
+    // Selbstheilung: ist mehr als die Haelfte des Korridors dauerhaft "aktiv",
+    // stimmt das Hintergrundmodell nicht mehr (Schwarzstart, Belichtung,
+    // Kamera bewegt) – neu kalibrieren statt Phantome zu tracken
+    if (corrN > 0 && actN / corrN > 0.5) {
+      state.anomal = (state.anomal || 0) + 1;
+      if (state.anomal > 45) {
+        state.bg = null;
+        state.anomal = 0;
+        state.tracker = createTracker();
+        setStatus('Hintergrund wird neu kalibriert…');
+        return;
+      }
+    } else {
+      state.anomal = 0;
     }
     const rows = 2 * A.half;
     const frac = Math.max(0.02, (11 - Number($('sens').value)) * 0.037);
@@ -783,17 +808,15 @@
         octx.fillText('M', hx - 5, hy - 18);
       }
 
-      // Aktive Tracks als Punkte auf der Achse
+      // Aktive Tracks als Segment auf der Achse
       for (const tr of state.tracker.active) {
         if (tr.n < 3) continue;
-        const s = tr.c + A.s0;
-        const tx = A.ax + A.ux * s, ty = A.ay + A.uy * s;
-        const [sx, sy] = procToStage(tx, ty, pw, ph);
-        const trW = (tr.w / A.nb) * Math.hypot(
-          procToStage(A.ax + A.ux * A.nb, A.ay + A.uy * A.nb, pw, ph)[0] - procToStage(A.ax, A.ay, pw, ph)[0],
-          procToStage(A.ax + A.ux * A.nb, A.ay + A.uy * A.nb, pw, ph)[1] - procToStage(A.ax, A.ay, pw, ph)[1]);
-        octx.strokeStyle = '#4cd97b'; octx.lineWidth = 2;
-        octx.beginPath(); octx.arc(sx, sy, Math.max(10, trW / 2), 0, Math.PI * 2); octx.stroke();
+        const wHalf = Math.min(tr.w, A.nb * 0.5) / 2;
+        const sc = tr.c + A.s0;
+        const [x1, y1] = procToStage(A.ax + A.ux * (sc - wHalf), A.ay + A.uy * (sc - wHalf), pw, ph);
+        const [x2, y2] = procToStage(A.ax + A.ux * (sc + wHalf), A.ay + A.uy * (sc + wHalf), pw, ph);
+        octx.strokeStyle = '#4cd97b'; octx.lineWidth = 5; octx.lineCap = 'round';
+        octx.beginPath(); octx.moveTo(x1, y1); octx.lineTo(x2, y2); octx.stroke();
       }
     } else {
       // Punkte auch ohne gültige Achse anfassbar zeichnen
